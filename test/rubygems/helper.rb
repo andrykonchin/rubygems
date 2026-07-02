@@ -3,24 +3,67 @@
 require "rubygems"
 
 begin
+  raise LoadError if ENV["GEM_COMMAND"]
+
+  gem "simplecov_json_formatter"
+  require "simplecov"
+
+  unless ENV["SIMPLECOV_SUBPROCESS"]
+    SimpleCov.start do
+      command_name "rubygems"
+      root File.expand_path("../..", __dir__)
+      coverage_dir File.expand_path("../../coverage", __dir__)
+
+      add_filter "/test/"
+      add_filter "/bundler/"
+      add_filter "/tool/"
+      add_filter "/lib/rubygems/vendor/"
+      add_filter ".gemspec"
+    end
+
+    # Prevent SimpleCov from running in subprocesses spawned by assert_separately
+    ENV["SIMPLECOV_SUBPROCESS"] = "1"
+  end
+rescue LoadError
+  # SimpleCov is not installed
+end
+
+begin
   gem "test-unit", "~> 3.0"
 rescue Gem::LoadError
 end
 
 require "test/unit"
 
-ENV["JARS_SKIP"] = "true" if Gem.java_platform? # avoid unnecessary and noisy `jar-dependencies` post install hook
-
+require "digest"
 require "fileutils"
 require "pathname"
 require "pp"
+require "rubygems/installer"
 require "rubygems/package"
 require "shellwords"
 require "tmpdir"
-require "uri"
+require "rubygems/vendor/uri/lib/uri"
 require "zlib"
-require "benchmark" # stdlib
 require_relative "mock_gem_ui"
+
+# JRuby on Windows raises TypeError inside File.symlink (the wincode helper
+# trips on a nil path), so any test that exercises Gem::Installer's symlink
+# branch fails to even install the gem. Real users hit the wrapper branch via
+# `gem install` (DependencyInstaller passes wrappers: true), so mirror that
+# default for direct Gem::Installer.at callers in the test suite.
+if Gem.win_platform? && Gem.java_platform?
+  module Gem::InstallerDefaultWrappersOnJRubyWindows
+    def at(path, options = {})
+      super(path, { wrappers: true }.merge(options))
+    end
+
+    def for_spec(spec, options = {})
+      super(spec, { wrappers: true }.merge(options))
+    end
+  end
+  Gem::Installer.singleton_class.prepend(Gem::InstallerDefaultWrappersOnJRubyWindows)
+end
 
 module Gem
   ##
@@ -60,6 +103,44 @@ class Gem::Command
 
   def self.specific_extra_args_hash=(value)
     @specific_extra_args_hash = value
+  end
+end
+
+class Gem::Installer
+  # Copy from Gem::Installer#install with install_as_default option from old version
+  def install_default_gem
+    pre_install_checks
+
+    run_pre_install_hooks
+
+    spec.loaded_from = default_spec_file
+
+    FileUtils.rm_rf gem_dir
+    FileUtils.rm_rf spec.extension_dir
+
+    dir_mode = options[:dir_mode]
+    FileUtils.mkdir_p gem_dir, mode: dir_mode && 0o755
+
+    extract_bin
+    write_default_spec
+
+    generate_bin
+    generate_plugins
+
+    File.chmod(dir_mode, gem_dir) if dir_mode
+
+    say spec.post_install_message if options[:post_install_message] && !spec.post_install_message.nil?
+
+    Gem::Specification.add_spec(spec)
+
+    load_plugin
+
+    run_post_install_hooks
+
+    spec
+  rescue Errno::EACCES => e
+    # Permission denied - /path/to/foo
+    raise Gem::FilePermissionError, e.message.split(" - ").last
   end
 end
 
@@ -105,39 +186,32 @@ class Gem::TestCase < Test::Unit::TestCase
     refute File.directory?(path), msg
   end
 
-  # https://github.com/seattlerb/minitest/blob/21d9e804b63c619f602f3f4ece6c71b48974707a/lib/minitest/assertions.rb#L188
-  def _synchronize
-    yield
-  end
-
-  # https://github.com/seattlerb/minitest/blob/21d9e804b63c619f602f3f4ece6c71b48974707a/lib/minitest/assertions.rb#L546
+  # Originally copied from minitest/assertions.rb
   def capture_subprocess_io
-    _synchronize do
-      require "tempfile"
+    require "tempfile"
 
-      captured_stdout = Tempfile.new("out")
-      captured_stderr = Tempfile.new("err")
+    captured_stdout = Tempfile.new("out")
+    captured_stderr = Tempfile.new("err")
 
-      orig_stdout = $stdout.dup
-      orig_stderr = $stderr.dup
-      $stdout.reopen captured_stdout
-      $stderr.reopen captured_stderr
+    orig_stdout = $stdout.dup
+    orig_stderr = $stderr.dup
+    $stdout.reopen captured_stdout
+    $stderr.reopen captured_stderr
 
-      yield
+    yield
 
-      $stdout.rewind
-      $stderr.rewind
+    $stdout.rewind
+    $stderr.rewind
 
-      return captured_stdout.read, captured_stderr.read
-    ensure
-      $stdout.reopen orig_stdout
-      $stderr.reopen orig_stderr
+    [captured_stdout.read, captured_stderr.read]
+  ensure
+    $stdout.reopen orig_stdout
+    $stderr.reopen orig_stderr
 
-      orig_stdout.close
-      orig_stderr.close
-      captured_stdout.close!
-      captured_stderr.close!
-    end
+    orig_stdout.close
+    orig_stderr.close
+    captured_stdout.close!
+    captured_stderr.close!
   end
 
   ##
@@ -155,6 +229,14 @@ class Gem::TestCase < Test::Unit::TestCase
     else
       RbConfig::CONFIG.delete "ENABLE_SHARED"
     end
+  end
+
+  ##
+  # Overrides the Gem.install_extension_in_lib function and restores the
+  # original when the block ends
+  #
+  def extension_in_lib(value = true) # :nodoc:
+    Gem.stub(:install_extension_in_lib, value) { yield }
   end
 
   ##
@@ -282,12 +364,14 @@ class Gem::TestCase < Test::Unit::TestCase
   def setup
     @orig_hooks = {}
     @orig_env = ENV.to_hash
-    @tmp = File.expand_path("tmp")
 
-    FileUtils.mkdir_p @tmp
+    top_srcdir = __dir__ + "/../.."
+    @tmp = File.expand_path(ENV.fetch("GEM_TEST_TMPDIR", "tmp"), top_srcdir)
+
+    FileUtils.mkdir_p(@tmp, mode: 0o700) # =rwx
+    @tmp = File.realpath(@tmp)
 
     @tempdir = Dir.mktmpdir("test_rubygems_", @tmp)
-    @tempdir.tap(&Gem::UNTAINT)
 
     ENV["GEM_VENDOR"] = nil
     ENV["GEMRC"] = nil
@@ -295,8 +379,12 @@ class Gem::TestCase < Test::Unit::TestCase
     ENV["XDG_CONFIG_HOME"] = nil
     ENV["XDG_DATA_HOME"] = nil
     ENV["XDG_STATE_HOME"] = nil
+    ENV["MAKEFLAGS"] = nil
     ENV["SOURCE_DATE_EPOCH"] = nil
     ENV["BUNDLER_VERSION"] = nil
+    ENV["BUNDLE_CONFIG"] = nil
+    ENV["BUNDLE_USER_CONFIG"] = nil
+    ENV["BUNDLE_USER_HOME"] = nil
     ENV["RUBYGEMS_PREVENT_UPDATE_SUGGESTION"] = "true"
 
     @current_dir = Dir.pwd
@@ -337,7 +425,6 @@ class Gem::TestCase < Test::Unit::TestCase
                       File.expand_path(s)
                     end
       if expand_path != s
-        expand_path.tap(&Gem::UNTAINT)
         if s.instance_variable_defined?(:@gem_prelude_index)
           expand_path.instance_variable_set(:@gem_prelude_index, expand_path)
         end
@@ -350,11 +437,16 @@ class Gem::TestCase < Test::Unit::TestCase
     Dir.chdir @tempdir
 
     ENV["HOME"] = @userhome
+    # Remove "RUBY_CODESIGN", which is used by mkmf-generated Makefile to
+    # sign extension bundles on macOS, to avoid trying to find the specified key
+    # from the fake $HOME/Library/Keychains directory.
+    ENV.delete "RUBY_CODESIGN"
     Gem.instance_variable_set :@config_file, nil
     Gem.instance_variable_set :@user_home, nil
     Gem.instance_variable_set :@config_home, nil
     Gem.instance_variable_set :@data_home, nil
     Gem.instance_variable_set :@state_home, @statehome
+    Gem.instance_variable_set :@state_file, nil
     Gem.instance_variable_set :@gemdeps, nil
     Gem.instance_variable_set :@env_requirements_by_name, nil
     Gem.send :remove_instance_variable, :@ruby_version if
@@ -364,7 +456,7 @@ class Gem::TestCase < Test::Unit::TestCase
 
     ENV["GEM_PRIVATE_KEY_PASSPHRASE"] = PRIVATE_KEY_PASSPHRASE
 
-    Gem.instance_variable_set(:@default_specifications_dir, nil)
+    Gem.instance_variable_set(:@default_specifications_dir, File.join(@gemhome, "specifications", "default"))
     if Gem.java_platform?
       @orig_default_gem_home = RbConfig::CONFIG["default_gem_home"]
       RbConfig::CONFIG["default_gem_home"] = @gemhome
@@ -396,8 +488,9 @@ class Gem::TestCase < Test::Unit::TestCase
     Gem::RemoteFetcher.fetcher = Gem::FakeFetcher.new
 
     @gem_repo = "http://gems.example.com/"
-    @uri = URI.parse @gem_repo
-    Gem.sources.replace [@gem_repo]
+    Gem.instance_variable_set :@default_sources, [@gem_repo]
+    Gem.instance_variable_set :@sources, nil
+    @uri = Gem::URI.parse @gem_repo
 
     Gem.searcher = nil
     Gem::SpecFetcher.fetcher = nil
@@ -413,6 +506,9 @@ class Gem::TestCase < Test::Unit::TestCase
     %w[post_install_hooks done_installing_hooks post_uninstall_hooks pre_uninstall_hooks pre_install_hooks pre_reset_hooks post_reset_hooks post_build_hooks].each do |name|
       @orig_hooks[name] = Gem.send(name).dup
     end
+
+    Gem::Platform.const_get(:GENERIC_CACHE).clear
+    Gem::Platform.const_get(:GENERICS).each {|g| Gem::Platform.const_get(:GENERIC_CACHE)[g] = g }
 
     @marshal_version = "#{Marshal::MAJOR_VERSION}.#{Marshal::MINOR_VERSION}"
     @orig_loaded_features = $LOADED_FEATURES.dup
@@ -442,9 +538,7 @@ class Gem::TestCase < Test::Unit::TestCase
 
     Dir.chdir @current_dir
 
-    FileUtils.rm_rf @tempdir
-
-    restore_env
+    ENV.replace(@orig_env)
 
     Gem::ConfigFile.send :remove_const, :SYSTEM_WIDE_CONFIG_FILE
     Gem::ConfigFile.send :const_set, :SYSTEM_WIDE_CONFIG_FILE,
@@ -471,6 +565,10 @@ class Gem::TestCase < Test::Unit::TestCase
     end
 
     @back_ui.close
+
+    FileUtils.rm_rf @tempdir
+
+    refute_directory_exists @tempdir, "#{@tempdir} used by test #{method_name} is still in use"
   end
 
   def credential_setup
@@ -525,6 +623,16 @@ class Gem::TestCase < Test::Unit::TestCase
     ENV["BUNDLE_GEMFILE"] = File.join(@tempdir, "Gemfile")
   end
 
+  def with_env(overrides, &block)
+    orig_env = ENV.to_h
+    ENV.replace(overrides)
+    begin
+      block.call
+    ensure
+      ENV.replace(orig_env)
+    end
+  end
+
   ##
   # A git_gem is used with a gem dependencies file.  The gem created here
   # has no files, just a gem specification for the given +name+ and +version+.
@@ -576,7 +684,7 @@ class Gem::TestCase < Test::Unit::TestCase
   end
 
   def in_path?(executable) # :nodoc:
-    return true if %r{\A([A-Z]:|/)} =~ executable && File.exist?(executable)
+    return true if %r{\A([A-Z]:|/)}.match?(executable) && File.exist?(executable)
 
     ENV["PATH"].split(File::PATH_SEPARATOR).any? do |directory|
       File.exist? File.join directory, executable
@@ -598,17 +706,17 @@ class Gem::TestCase < Test::Unit::TestCase
         end
       end
 
-      gem = File.join(@tempdir, File.basename(gem)).tap(&Gem::UNTAINT)
+      gem = File.join(@tempdir, File.basename(gem))
     end
 
-    Gem::Installer.at(gem, options.merge({ :wrappers => true })).install
+    Gem::Installer.at(gem, options.merge({ wrappers: true })).install
   end
 
   ##
   # Builds and installs the Gem::Specification +spec+ into the user dir
 
   def install_gem_user(spec)
-    install_gem spec, :user_install => true
+    install_gem spec, user_install: true
   end
 
   ##
@@ -620,7 +728,7 @@ class Gem::TestCase < Test::Unit::TestCase
       def ask_if_ok(spec)
         true
       end
-    end.new(spec.name, :executables => true, :user_install => true).uninstall
+    end.new(spec.name, executables: true, user_install: true).uninstall
   end
 
   ##
@@ -637,7 +745,7 @@ class Gem::TestCase < Test::Unit::TestCase
   # Reads a Marshal file at +path+
 
   def read_cache(path)
-    File.open path.dup.tap(&Gem::UNTAINT), "rb" do |io|
+    File.open path.dup, "rb" do |io|
       Marshal.load io.read
     end
   end
@@ -664,15 +772,19 @@ class Gem::TestCase < Test::Unit::TestCase
     path
   end
 
+  def write_dummy_extconf(gem_name)
+    write_file File.join(@tempdir, "extconf.rb") do |io|
+      io.puts "require 'mkmf'"
+      yield io if block_given?
+      io.puts "create_makefile '#{gem_name}'"
+    end
+  end
+
   ##
-  # Load a YAML string, the psych 3 way
+  # Load a YAML string using the safe loader with gem-spec permitted classes.
 
   def load_yaml(yaml)
-    if Psych.respond_to?(:unsafe_load)
-      Psych.unsafe_load(yaml)
-    else
-      Psych.load(yaml)
-    end
+    Gem::SafeYAML.safe_load(yaml)
   end
 
   ##
@@ -697,7 +809,7 @@ class Gem::TestCase < Test::Unit::TestCase
   #
   # Use this with #write_file to build an installed gem.
 
-  def quick_gem(name, version="2")
+  def quick_gem(name, version = "2")
     require "rubygems/specification"
 
     spec = Gem::Specification.new do |s|
@@ -772,7 +884,7 @@ class Gem::TestCase < Test::Unit::TestCase
 
   def install_specs(*specs)
     specs.each do |spec|
-      Gem::Installer.for_spec(spec, :force => true).install
+      Gem::Installer.for_spec(spec, force: true).install
     end
 
     Gem.searcher = nil
@@ -783,8 +895,8 @@ class Gem::TestCase < Test::Unit::TestCase
 
   def install_default_gems(*specs)
     specs.each do |spec|
-      installer = Gem::Installer.for_spec(spec, :install_as_default => true)
-      installer.install
+      installer = Gem::Installer.for_spec(spec)
+      installer.install_default_gem
       Gem.register_default_spec(spec)
     end
   end
@@ -797,8 +909,14 @@ class Gem::TestCase < Test::Unit::TestCase
     Gem::Specification.unresolved_deps.values.map(&:to_s).sort
   end
 
-  def new_default_spec(name, version, deps = nil, *files)
+  def new_default_spec(name, version, deps = nil, *files, executable: false)
     spec = util_spec name, version, deps
+
+    if executable
+      spec.executables = %w[executable]
+
+      write_file File.join(@tempdir, "bin", "executable")
+    end
 
     spec.loaded_from = File.join(@gemhome, "specifications", "default", spec.spec_name)
     spec.files = files
@@ -808,10 +926,8 @@ class Gem::TestCase < Test::Unit::TestCase
     Gem.instance_variable_set(:@default_gem_load_paths, [*Gem.send(:default_gem_load_paths), lib_dir])
     $LOAD_PATH.unshift(lib_dir)
     files.each do |file|
-      rb_path = File.join(lib_dir, file)
-      FileUtils.mkdir_p(File.dirname(rb_path))
-      File.open(rb_path, "w") do |rb|
-        rb << "# #{file}"
+      write_file File.join(lib_dir, file) do |io|
+        io.write "# #{file}"
       end
     end
 
@@ -1002,7 +1118,7 @@ Also, a list:
   # Add +spec+ to +@fetcher+ serving the data in the file +path+.
   # +repo+ indicates which repo to make +spec+ appear to be in.
 
-  def add_to_fetcher(spec, path=nil, repo=@gem_repo)
+  def add_to_fetcher(spec, path = nil, repo = @gem_repo)
     path ||= spec.cache_file
     @fetcher.data["#{@gem_repo}gems/#{spec.file_name}"] = read_binary(path)
   end
@@ -1056,6 +1172,81 @@ Also, a list:
     end
 
     nil # force errors
+  end
+
+  ##
+  # Sets up the compact index API endpoints (versions, names and
+  # info/NAME) for +specs+ on +@fetcher+.  +created_at+ maps spec
+  # original names to ISO8601 timestamps emitted as compact index v2
+  # metadata.
+
+  def util_setup_compact_index(*specs, created_at: {})
+    by_name = Hash.new {|hash, name| hash[name] = [] }
+    specs.each {|spec| by_name[spec.name] << spec }
+
+    names_body = +"---\n"
+    versions_body = +"created_at: 2026-01-01T00:00:00Z\n---\n"
+
+    by_name.keys.sort.each do |name|
+      info_body = +"---\n"
+      by_name[name].each do |spec|
+        info_body << util_compact_index_info_line(spec, created_at[spec.original_name]) << "\n"
+      end
+
+      versions_list = by_name[name].map {|spec| spec.original_name.delete_prefix("#{spec.name}-") }.join(",")
+      versions_body << "#{name} #{versions_list} #{Digest::MD5.hexdigest(info_body)}\n"
+      names_body << "#{name}\n"
+
+      @fetcher.data["#{@gem_repo}info/#{name}"] = util_compact_index_response(info_body)
+    end
+
+    versions_response = util_compact_index_response(versions_body)
+    # Gem::Source#dependency_resolver_set probes this URL via fetch_path and
+    # builds the info URL from the response uri
+    versions_response.uri = Gem::URI("#{@gem_repo}versions")
+
+    @fetcher.data["#{@gem_repo}versions"] = versions_response
+    @fetcher.data["#{@gem_repo}names"] = util_compact_index_response(names_body)
+
+    nil
+  end
+
+  ##
+  # A compact index info file line for +spec+, including v2 metadata.
+
+  def util_compact_index_info_line(spec, created_at = nil)
+    version = spec.original_name.delete_prefix("#{spec.name}-")
+
+    dependencies = spec.runtime_dependencies.map do |dependency|
+      "#{dependency.name}:#{util_compact_index_requirement(dependency.requirement)}"
+    end.join(",")
+
+    metadata = +"checksum:#{Digest::SHA256.hexdigest(spec.original_name)}"
+    unless spec.required_ruby_version.nil? || spec.required_ruby_version.none?
+      metadata << ",ruby:#{util_compact_index_requirement(spec.required_ruby_version)}"
+    end
+    unless spec.required_rubygems_version.nil? || spec.required_rubygems_version.none?
+      metadata << ",rubygems:#{util_compact_index_requirement(spec.required_rubygems_version)}"
+    end
+    metadata << ",created_at:#{created_at}" if created_at
+
+    "#{version} #{dependencies}|#{metadata}"
+  end
+
+  def util_compact_index_requirement(requirement)
+    requirement.as_list.join("&")
+  end
+
+  def util_compact_index_response(body)
+    Gem::HTTPResponseFactory.create(
+      body: body,
+      code: 200,
+      msg: "OK",
+      headers: {
+        "ETag" => %("#{Digest::MD5.hexdigest(body)}"),
+        "Repr-Digest" => "sha-256=:#{Digest::SHA256.base64digest(body)}:",
+      }
+    )
   end
 
   def write_marshalled_gemspecs(*all_specs)
@@ -1164,6 +1355,26 @@ Also, a list:
     system("nmake /? 1>NUL 2>&1")
   end
 
+  @@symlink_supported = nil
+
+  # This is needed for Windows environment without symlink support enabled (the default
+  # for non admin) to be able to skip test for features using symlinks.
+  def symlink_supported?
+    if @@symlink_supported.nil?
+      begin
+        File.symlink(File.join(@tempdir, "a"), File.join(@tempdir, "b"))
+        File.readlink(File.join(@tempdir, "b"))
+      rescue NotImplementedError, SystemCallError
+        @@symlink_supported = false
+      else
+        @@symlink_supported = true
+      ensure
+        File.unlink(File.join(@tempdir, "b")) if File.symlink?(File.join(@tempdir, "b"))
+      end
+    end
+    @@symlink_supported
+  end
+
   # In case we're building docs in a background process, this method waits for
   # that process to exit (or if it's already been reaped, or never happened,
   # swallows the Errno::ECHILD error).
@@ -1175,7 +1386,7 @@ Also, a list:
   ##
   # Allows the proper version of +rake+ to be used for the test.
 
-  def build_rake_in(good=true)
+  def build_rake_in(good = true)
     gem_ruby = Gem.ruby
     Gem.ruby = self.class.rubybin
     env_rake = ENV["rake"]
@@ -1354,12 +1565,12 @@ Also, a list:
   #
   # Yields the +specification+ to the block, if given
 
-  def vendor_gem(name = "a", version = 1)
+  def vendor_gem(name = "a", version = 1, &block)
     directory = File.join "vendor", name
 
     FileUtils.mkdir_p directory
 
-    save_gemspec name, version, directory
+    save_gemspec name, version, directory, &block
   end
 
   ##
@@ -1510,23 +1721,6 @@ Also, a list:
     PUBLIC_KEY  = nil
     PUBLIC_CERT = nil
   end if Gem::HAVE_OPENSSL
-
-  private
-
-  def restore_env
-    unless Gem.win_platform?
-      ENV.replace(@orig_env)
-      return
-    end
-
-    # Fallback logic for Windows below to workaround
-    # https://bugs.ruby-lang.org/issues/16798. Can be dropped once all
-    # supported rubies include the fix for that.
-
-    ENV.clear
-
-    @orig_env.each {|k, v| ENV[k] = v }
-  end
 end
 
 # https://github.com/seattlerb/minitest/blob/13c48a03d84a2a87855a4de0c959f96800100357/lib/minitest/mock.rb#L192
@@ -1564,3 +1758,9 @@ class Object
 end
 
 require_relative "utilities"
+
+# mise installed rubygems_plugin.rb to system wide `site_ruby` directory.
+# This empty module avoid to call `mise` command.
+module ReshimInstaller
+  def self.reshim; end
+end

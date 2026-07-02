@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require_relative "deprecate"
-
 ##
 # This module contains various utility methods as module methods.
 
@@ -57,26 +55,6 @@ module Gem::Util
   end
 
   ##
-  # Invokes system, but silences all output.
-
-  def self.silent_system(*command)
-    opt = { :out => IO::NULL, :err => [:child, :out] }
-    if Hash === command.last
-      opt.update(command.last)
-      cmds = command[0...-1]
-    else
-      cmds = command.dup
-    end
-    system(*(cmds << opt))
-  end
-
-  class << self
-    extend Gem::Deprecate
-
-    rubygems_deprecate :silent_system
-  end
-
-  ##
   # Enumerates the parents of +directory+.
 
   def self.traverse_parents(directory, &block)
@@ -105,11 +83,11 @@ module Gem::Util
   end
 
   ##
-  # Corrects +path+ (usually returned by `URI.parse().path` on Windows), that
+  # Corrects +path+ (usually returned by `Gem::URI.parse().path` on Windows), that
   # comes with a leading slash.
 
   def self.correct_for_windows_path(path)
-    if path[0].chr == "/" && path[1].chr =~ /[a-z]/i && path[2].chr == ":"
+    if path[0].chr == "/" && path[1].chr.match?(/[a-z]/i) && path[2].chr == ":"
       path[1..-1]
     else
       path

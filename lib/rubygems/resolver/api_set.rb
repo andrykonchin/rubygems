@@ -1,14 +1,14 @@
 # frozen_string_literal: true
 
 ##
-# The global rubygems pool, available via the rubygems.org API.
+# The global rubygems pool, available via the Compact Index API.
 # Returns instances of APISpecification.
 
 class Gem::Resolver::APISet < Gem::Resolver::Set
   autoload :GemParser, File.expand_path("api_set/gem_parser", __dir__)
 
   ##
-  # The URI for the dependency API this APISet uses.
+  # The URI for the Compact Index API this APISet uses.
 
   attr_reader :dep_uri # :nodoc:
 
@@ -23,18 +23,19 @@ class Gem::Resolver::APISet < Gem::Resolver::Set
   attr_reader :uri
 
   ##
-  # Creates a new APISet that will retrieve gems from +uri+ using the RubyGems
-  # API URL +dep_uri+ which is described at
-  # https://guides.rubygems.org/rubygems-org-api
+  # Creates a new APISet that will retrieve gems from +uri+ using the Compact
+  # Index API URL +dep_uri+ which is described at
+  # https://guides.rubygems.org/rubygems-org-compact-index-api
 
   def initialize(dep_uri = "https://index.rubygems.org/info/")
     super()
 
-    dep_uri = URI dep_uri unless URI === dep_uri
+    dep_uri = Gem::URI dep_uri unless Gem::URI === dep_uri
 
     @dep_uri = dep_uri
     @uri     = dep_uri + ".."
 
+    @client = nil
     @data   = Hash.new {|h,k| h[k] = [] }
     @source = Gem::Source.new @uri
 
@@ -99,16 +100,15 @@ class Gem::Resolver::APISet < Gem::Resolver::Set
   # Return data for all versions of the gem +name+.
 
   def versions(name) # :nodoc:
-    if @data.key?(name)
-      return @data[name]
+    return @data[name] if @data.key?(name)
+
+    infos = begin
+      client.fetch_info(name)
+    rescue Gem::RemoteFetcher::FetchError, Gem::CompactIndexClient::Error
+      []
     end
 
-    uri = @dep_uri + name
-    str = Gem::RemoteFetcher.fetcher.fetch_path uri
-
-    lines(str).each do |ver|
-      number, platform, dependencies, requirements = parse_gem(ver)
-
+    infos.each do |_, number, platform, dependencies, requirements|
       platform ||= "ruby"
       dependencies = dependencies.map {|dep_name, reqs| [dep_name, reqs.join(", ")] }
       requirements = requirements.map {|req_name, reqs| [req_name.to_sym, reqs] }.to_h
@@ -121,14 +121,7 @@ class Gem::Resolver::APISet < Gem::Resolver::Set
 
   private
 
-  def lines(str)
-    lines = str.split("\n")
-    header = lines.index("---")
-    header ? lines[header + 1..-1] : lines
-  end
-
-  def parse_gem(string)
-    @gem_parser ||= GemParser.new
-    @gem_parser.parse(string)
+  def client # :nodoc:
+    @client ||= @source.compact_index_client
   end
 end

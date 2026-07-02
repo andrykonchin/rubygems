@@ -58,8 +58,8 @@ class Gem::CommandManager
     :owner,
     :pristine,
     :push,
-    :query,
     :rdoc,
+    :rebuild,
     :search,
     :server,
     :signin,
@@ -106,7 +106,7 @@ class Gem::CommandManager
   # Register all the subcommands supported by the gem command.
 
   def initialize
-    require "timeout"
+    require_relative "vendored_timeout"
     @commands = {}
 
     BUILTIN_COMMANDS.each do |name|
@@ -117,7 +117,7 @@ class Gem::CommandManager
   ##
   # Register the Symbol +command+ as a gem command.
 
-  def register_command(command, obj=false)
+  def register_command(command, obj = false)
     @commands[command] = obj
   end
 
@@ -147,9 +147,9 @@ class Gem::CommandManager
   ##
   # Run the command specified by +args+.
 
-  def run(args, build_args=nil)
+  def run(args, build_args = nil)
     process_args(args, build_args)
-  rescue StandardError, Timeout::Error => ex
+  rescue StandardError, Gem::Timeout::Error => ex
     if ex.respond_to?(:detailed_message)
       msg = ex.detailed_message(highlight: false).sub(/\A(.*?)(?: \(.+?\))/) { $1 }
     else
@@ -164,7 +164,7 @@ class Gem::CommandManager
     terminate_interaction(1)
   end
 
-  def process_args(args, build_args=nil)
+  def process_args(args, build_args = nil)
     if args.empty?
       say Gem::Command::HELP
       terminate_interaction 1
@@ -229,18 +229,16 @@ class Gem::CommandManager
   def load_and_instantiate(command_name)
     command_name = command_name.to_s
     const_name = command_name.capitalize.gsub(/_(.)/) { $1.upcase } << "Command"
-    load_error = nil
 
     begin
       begin
         require "rubygems/commands/#{command_name}_command"
-      rescue LoadError => e
-        load_error = e
+      rescue LoadError
+        # it may have been defined from a rubygems_plugin.rb file
       end
+
       Gem::Commands.const_get(const_name).new
     rescue StandardError => e
-      e = load_error if load_error
-
       alert_error clean_text("Loading command: #{command_name} (#{e.class})\n\t#{e}")
       ui.backtrace e
     end
@@ -249,6 +247,7 @@ class Gem::CommandManager
   def invoke_command(args, build_args)
     cmd_name = args.shift.downcase
     cmd = find_command cmd_name
+    terminate_interaction 1 unless cmd
     cmd.deprecation_warning if cmd.deprecated?
     cmd.invoke_with_build_args args, build_args
   end

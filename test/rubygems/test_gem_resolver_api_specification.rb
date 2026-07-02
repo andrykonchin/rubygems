@@ -6,10 +6,10 @@ class TestGemResolverAPISpecification < Gem::TestCase
   def test_initialize
     set = Gem::Resolver::APISet.new
     data = {
-      :name => "rails",
-      :number => "3.0.3",
-      :platform => Gem::Platform.local.to_s,
-      :dependencies => [
+      name: "rails",
+      number: "3.0.3",
+      platform: Gem::Platform.local.to_s,
+      dependencies: [
         ["bundler",  "~> 1.0"],
         ["railties", "= 3.0.3"],
       ],
@@ -27,6 +27,52 @@ class TestGemResolverAPISpecification < Gem::TestCase
     ]
 
     assert_equal expected, spec.dependencies
+    assert_nil spec.created_at
+  end
+
+  def test_initialize_created_at
+    set = Gem::Resolver::APISet.new
+    data = {
+      name: "rails",
+      number: "3.0.3",
+      platform: "ruby",
+      dependencies: [],
+      requirements: { created_at: ["2026-06-05T10:30:45Z"] },
+    }
+
+    spec = Gem::Resolver::APISpecification.new set, data
+
+    assert_equal Time.utc(2026, 6, 5, 10, 30, 45), spec.created_at
+  end
+
+  def test_initialize_created_at_invalid
+    set = Gem::Resolver::APISet.new
+    data = {
+      name: "rails",
+      number: "3.0.3",
+      platform: "ruby",
+      dependencies: [],
+      requirements: { created_at: ["not a timestamp"] },
+    }
+
+    spec = Gem::Resolver::APISpecification.new set, data
+
+    assert_nil spec.created_at
+  end
+
+  def test_initialize_created_at_non_iso8601
+    set = Gem::Resolver::APISet.new
+    data = {
+      name: "rails",
+      number: "3.0.3",
+      platform: "ruby",
+      dependencies: [],
+      requirements: { created_at: ["2026"] },
+    }
+
+    spec = Gem::Resolver::APISpecification.new set, data
+
+    assert_nil spec.created_at
   end
 
   def test_fetch_development_dependencies
@@ -45,10 +91,10 @@ class TestGemResolverAPISpecification < Gem::TestCase
     set = Gem::Resolver::APISet.new repo
 
     data = {
-      :name => "rails",
-      :number => "3.0.3",
-      :platform => "ruby",
-      :dependencies => [
+      name: "rails",
+      number: "3.0.3",
+      platform: "ruby",
+      dependencies: [
         ["bundler",  "~> 1.0"],
         ["railties", "= 3.0.3"],
       ],
@@ -72,10 +118,10 @@ class TestGemResolverAPISpecification < Gem::TestCase
   def test_installable_platform_eh
     set = Gem::Resolver::APISet.new
     data = {
-      :name => "a",
-      :number => "1",
-      :platform => "ruby",
-      :dependencies => [],
+      name: "a",
+      number: "1",
+      platform: "ruby",
+      dependencies: [],
     }
 
     a_spec = Gem::Resolver::APISpecification.new set, data
@@ -83,10 +129,10 @@ class TestGemResolverAPISpecification < Gem::TestCase
     assert a_spec.installable_platform?
 
     data = {
-      :name => "b",
-      :number => "1",
-      :platform => "cpu-other_platform-1",
-      :dependencies => [],
+      name: "b",
+      number: "1",
+      platform: "cpu-other_platform-1",
+      dependencies: [],
     }
 
     b_spec = Gem::Resolver::APISpecification.new set, data
@@ -94,10 +140,10 @@ class TestGemResolverAPISpecification < Gem::TestCase
     refute b_spec.installable_platform?
 
     data = {
-      :name => "c",
-      :number => "1",
-      :platform => Gem::Platform.local.to_s,
-      :dependencies => [],
+      name: "c",
+      number: "1",
+      platform: Gem::Platform.local.to_s,
+      dependencies: [],
     }
 
     c_spec = Gem::Resolver::APISpecification.new set, data
@@ -108,10 +154,10 @@ class TestGemResolverAPISpecification < Gem::TestCase
   def test_source
     set = Gem::Resolver::APISet.new
     data = {
-      :name => "a",
-      :number => "1",
-      :platform => "ruby",
-      :dependencies => [],
+      name: "a",
+      number: "1",
+      platform: "ruby",
+      dependencies: [],
     }
 
     api_spec = Gem::Resolver::APISpecification.new set, data
@@ -124,13 +170,13 @@ class TestGemResolverAPISpecification < Gem::TestCase
       fetcher.spec "a", 1
     end
 
-    dep_uri = URI(@gem_repo) + "info"
+    dep_uri = Gem::URI(@gem_repo) + "info"
     set = Gem::Resolver::APISet.new dep_uri
     data = {
-      :name => "a",
-      :number => "1",
-      :platform => "ruby",
-      :dependencies => [],
+      name: "a",
+      number: "1",
+      platform: "ruby",
+      dependencies: [],
     }
 
     api_spec = Gem::Resolver::APISpecification.new set, data
@@ -148,13 +194,13 @@ class TestGemResolverAPISpecification < Gem::TestCase
       end
     end
 
-    dep_uri = URI(@gem_repo) + "info"
+    dep_uri = Gem::URI(@gem_repo) + "info"
     set = Gem::Resolver::APISet.new dep_uri
     data = {
-      :name => "j",
-      :number => "1",
-      :platform => "jruby",
-      :dependencies => [],
+      name: "j",
+      number: "1",
+      platform: "jruby",
+      dependencies: [],
     }
 
     api_spec = Gem::Resolver::APISpecification.new set, data

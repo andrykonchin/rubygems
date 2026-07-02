@@ -6,7 +6,7 @@ require_relative "../security"
 class Gem::Commands::CertCommand < Gem::Command
   def initialize
     super "cert", "Manage RubyGems certificates and signing settings",
-          :add => [], :remove => [], :list => [], :build => [], :sign => []
+          add: [], remove: [], list: [], build: [], sign: []
 
     add_option("-a", "--add CERT",
                "Add a trusted certificate.") do |cert_file, options|
@@ -158,7 +158,7 @@ class Gem::Commands::CertCommand < Gem::Command
     cert = Gem::Security.create_cert_email(
       email,
       key,
-      (Gem::Security::ONE_DAY * expiration_length_days)
+      Gem::Security::ONE_DAY * expiration_length_days
     )
 
     Gem::Security.write cert, "gem-public_cert.pem"

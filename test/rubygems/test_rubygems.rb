@@ -4,20 +4,21 @@ require_relative "helper"
 
 class GemTest < Gem::TestCase
   def test_rubygems_normal_behaviour
-    _ = Gem::Util.popen(*ruby_with_rubygems_in_load_path, "-e", "'require \"rubygems\"'", { :err => [:child, :out] }).strip
+    _ = Gem::Util.popen(*ruby_with_rubygems_in_load_path, "-e", "'require \"rubygems\"'", { err: [:child, :out] }).strip
     assert $?.success?
   end
 
   def test_operating_system_other_exceptions
     pend "does not apply to truffleruby" if RUBY_ENGINE == "truffleruby"
+    omit "JRuby on Windows loads a different operating_system defaults file" if Gem.win_platform? && Gem.java_platform?
 
     path = util_install_operating_system_rb <<-RUBY
       intentionally_not_implemented_method
     RUBY
 
-    output = Gem::Util.popen(*ruby_with_rubygems_and_fake_operating_system_in_load_path(path), "-e", "'require \"rubygems\"'", { :err => [:child, :out] }).strip
+    output = Gem::Util.popen(*ruby_with_rubygems_and_fake_operating_system_in_load_path(path), "-e", "'require \"rubygems\"'", { err: [:child, :out] }).strip
     assert !$?.success?
-    assert_includes output, "undefined local variable or method `intentionally_not_implemented_method'"
+    assert_match(/undefined local variable or method [`']intentionally_not_implemented_method'/, output)
     assert_includes output, "Loading the #{operating_system_rb_at(path)} file caused an error. " \
     "This file is owned by your OS, not by rubygems upstream. " \
     "Please find out which OS package this file belongs to and follow the guidelines from your OS to report " \
@@ -42,7 +43,7 @@ class GemTest < Gem::TestCase
       *ruby_with_rubygems_and_fake_operating_system_in_load_path(path),
       "-e",
       "require \"rubygems\"; puts Gem::Specification.stubs.map(&:full_name)",
-      { :err => [:child, :out] }
+      { err: [:child, :out] }
     ).strip
     begin
       assert_empty output

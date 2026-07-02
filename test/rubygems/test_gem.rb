@@ -11,7 +11,7 @@ require "rbconfig"
 class TestGem < Gem::TestCase
   PLUGINS_LOADED = [] # rubocop:disable Style/MutableConstant
 
-  PROJECT_DIR = File.expand_path("../..", __dir__).tap(&Gem::UNTAINT)
+  PROJECT_DIR = File.expand_path("../..", __dir__)
 
   def setup
     super
@@ -21,8 +21,6 @@ class TestGem < Gem::TestCase
     common_installer_setup
 
     @additional = %w[a b].map {|d| File.join @tempdir, d }
-
-    util_remove_interrupt_command
   end
 
   def test_self_finish_resolve
@@ -96,7 +94,7 @@ class TestGem < Gem::TestCase
 
     gemhome2 = "#{@gemhome}2"
 
-    installed = Gem.install "a", "= 1", :install_dir => gemhome2
+    installed = Gem.install "a", "= 1", install_dir: gemhome2
 
     assert_equal %w[a-1], installed.map(&:full_name)
 
@@ -115,7 +113,7 @@ class TestGem < Gem::TestCase
       begin
         raise "Error"
       rescue StandardError
-        Gem.install "a", "= 1", :install_dir => gemhome2
+        Gem.install "a", "= 1", install_dir: gemhome2
       end
     assert_equal %w[a-1], installed.map(&:full_name)
   end
@@ -133,7 +131,7 @@ class TestGem < Gem::TestCase
 
   def test_self_install_permissions_umask_077
     umask = File.umask(0o077)
-    assert_self_install_permissions
+    assert_self_install_permissions(data_mode: 0o600)
   ensure
     File.umask(umask)
   end
@@ -151,14 +149,16 @@ class TestGem < Gem::TestCase
     Gem::Installer.exec_format = nil
   end
 
-  def assert_self_install_permissions(format_executable: false)
+  def assert_self_install_permissions(format_executable: false, data_mode: 0o640)
+    omit "FileUtils.install signature differs on JRuby/Windows" if Gem.win_platform? && Gem.java_platform?
+
     mask = Gem.win_platform? ? 0o700 : 0o777
     options = {
-      :dir_mode => 0o500,
-      :prog_mode => Gem.win_platform? ? 0o410 : 0o510,
-      :data_mode => 0o640,
-      :wrappers => true,
-      :format_executable => format_executable,
+      dir_mode: 0o500,
+      prog_mode: Gem.win_platform? ? 0o410 : 0o510,
+      data_mode: data_mode,
+      wrappers: true,
+      format_executable: format_executable,
     }
     Dir.chdir @tempdir do
       Dir.mkdir "bin"
@@ -201,7 +201,8 @@ class TestGem < Gem::TestCase
     end
     assert_equal(expected, result)
   ensure
-    File.chmod(0o755, *Dir.glob(@gemhome + "/gems/**/").map {|path| path.tap(&Gem::UNTAINT) })
+    files = Dir.glob(@gemhome + "/gems/**/")
+    File.chmod(0o755, *files) unless files.empty?
   end
 
   def test_require_missing
@@ -312,7 +313,7 @@ class TestGem < Gem::TestCase
     assert_equal %w[a-1 b-2 c-2], loaded_spec_names
   end
 
-  def test_activate_bin_path_raises_a_meaningful_error_if_a_gem_thats_finally_activated_has_orphaned_dependencies
+  def test_activate_bin_path_backtracks_when_highest_version_has_orphaned_dependencies
     a1 = util_spec "a", "1" do |s|
       s.executables = ["exec"]
       s.add_dependency "b"
@@ -330,13 +331,11 @@ class TestGem < Gem::TestCase
 
     install_specs c1, b1, b2, a1
 
-    # c2 is missing, and b2 which has it as a dependency will be activated, so we should get an error about the orphaned dependency
+    # c2 is missing, but the resolver backtracks from b2 to b1 which
+    # works with c1, finding a valid solution despite partial installation
+    load Gem.activate_bin_path("a", "exec", ">= 0")
 
-    e = assert_raise Gem::UnsatisfiableDependencyError do
-      load Gem.activate_bin_path("a", "exec", ">= 0")
-    end
-
-    assert_equal "Unable to resolve dependency: 'b (>= 0)' requires 'c (= 2)'", e.message
+    assert_equal %w[a-1 b-1 c-1], loaded_spec_names
   end
 
   def test_activate_bin_path_in_debug_mode
@@ -516,7 +515,10 @@ class TestGem < Gem::TestCase
 
     Gem.clear_paths
 
-    assert_nil Gem::Specification.send(:class_variable_get, :@@all)
+    with_env("GEM_HOME" => "foo", "GEM_PATH" => "bar") do
+      assert_equal("foo", Gem.dir)
+      assert_equal("bar", Gem.path.first)
+    end
   end
 
   def test_self_configuration
@@ -524,35 +526,6 @@ class TestGem < Gem::TestCase
     Gem.configuration = nil
 
     assert_equal expected, Gem.configuration
-  end
-
-  def test_self_datadir
-    foo = nil
-
-    Dir.chdir @tempdir do
-      FileUtils.mkdir_p "data"
-      File.open File.join("data", "foo.txt"), "w" do |fp|
-        fp.puts "blah"
-      end
-
-      foo = util_spec "foo" do |s|
-        s.files = %w[data/foo.txt]
-      end
-
-      install_gem foo
-    end
-
-    gem "foo"
-
-    expected = File.join @gemhome, "gems", foo.full_name, "data", "foo"
-
-    assert_equal expected, Gem::Specification.find_by_name("foo").datadir
-  end
-
-  def test_self_datadir_nonexistent_package
-    assert_raise(Gem::MissingSpecError) do
-      Gem::Specification.find_by_name("xyzzy").datadir
-    end
   end
 
   def test_self_default_exec_format
@@ -614,6 +587,7 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_default_sources
+    Gem.remove_instance_variable :@default_sources
     assert_equal %w[https://rubygems.org/], Gem.default_sources
   end
 
@@ -1025,6 +999,20 @@ class TestGem < Gem::TestCase
     Gem.refresh
   end
 
+  def test_activated_specs_does_not_cause_duplicates_when_looping_through_specs
+    util_make_gems
+
+    s = Gem::Specification.first
+    s.activate
+
+    Gem.refresh
+
+    assert_equal 1, Gem::Specification.count {|spec| spec.full_name == s.full_name }
+
+    Gem.loaded_specs.delete(s)
+    Gem.refresh
+  end
+
   def test_self_ruby_escaping_spaces_in_path
     with_clean_path_to_ruby do
       with_rb_config_ruby("C:/Ruby 1.8/bin/ruby.exe") do
@@ -1212,6 +1200,8 @@ class TestGem < Gem::TestCase
     Gem.sources = nil
     Gem.configuration.sources = %w[http://test.example.com/]
     assert_equal %w[http://test.example.com/], Gem.sources
+  ensure
+    Gem.configuration.sources = nil
   end
 
   def test_try_activate_returns_true_for_activated_specs
@@ -1222,6 +1212,28 @@ class TestGem < Gem::TestCase
 
     assert Gem.try_activate("b"), "try_activate should return true"
     assert Gem.try_activate("b"), "try_activate should still return true"
+  end
+
+  def test_try_activate_does_not_raise_no_method_error_on_activation_conflict
+    a1 = util_spec "a", "1.0" do |s|
+      s.files << "lib/a/old.rb"
+    end
+
+    a2 = util_spec "a", "2.0" do |s|
+      s.files << "lib/a/old.rb"
+      s.files << "lib/a/new_file.rb"
+    end
+
+    install_specs a1, a2
+
+    # Activate the older version
+    gem "a", "= 1.0"
+
+    # try_activate a file only in the newer version should not raise
+    # NoMethodError on nil (https://bugs.ruby-lang.org/issues/21954)
+    assert_nothing_raised do
+      Gem.try_activate("a/new_file")
+    end
   end
 
   def test_spec_order_is_consistent
@@ -1281,7 +1293,6 @@ class TestGem < Gem::TestCase
   def test_self_try_activate_missing_extensions
     spec = util_spec "ext", "1" do |s|
       s.extensions = %w[ext/extconf.rb]
-      s.mark_version
       s.installed_by_version = v("2.2")
     end
 
@@ -1294,10 +1305,14 @@ class TestGem < Gem::TestCase
       refute Gem.try_activate "nonexistent"
     end
 
-    expected = "Ignoring ext-1 because its extensions are not built. " \
-               "Try: gem pristine ext --version 1\n"
+    if RUBY_ENGINE == "jruby"
+      assert_equal "", err
+    else
+      expected = "Ignoring ext-1 because its extensions are not built. " \
+                 "Try: gem pristine ext --version 1\n"
 
-    assert_equal expected, err
+      assert_equal expected, err
+    end
   end
 
   def test_self_use_paths_with_nils
@@ -1522,8 +1537,6 @@ class TestGem < Gem::TestCase
       nil
     end
 
-    util_remove_interrupt_command
-
     # Should attempt to cause a StandardError
     with_plugin("standarderror") { Gem.load_env_plugins }
     begin
@@ -1531,8 +1544,6 @@ class TestGem < Gem::TestCase
     rescue StandardError
       nil
     end
-
-    util_remove_interrupt_command
 
     # Should attempt to cause an Exception
     with_plugin("scripterror") { Gem.load_env_plugins }
@@ -1552,29 +1563,28 @@ class TestGem < Gem::TestCase
     g = util_spec "g", "1", nil, "lib/g.rb"
     m = util_spec "m", "1", nil, "lib/m.rb"
 
-    install_gem g, :install_dir => Gem.dir
-    m0 = install_gem m, :install_dir => Gem.dir
-    m1 = install_gem m, :install_dir => Gem.user_dir
+    install_gem g, install_dir: Gem.dir
+    m0 = install_gem m, install_dir: Gem.dir
+    m1 = install_gem m, install_dir: Gem.user_dir
 
     assert_equal m0.gem_dir, File.join(Gem.dir, "gems", "m-1")
     assert_equal m1.gem_dir, File.join(Gem.user_dir, "gems", "m-1")
 
     tests = [
-      [:dir0, [Gem.dir, Gem.user_dir], m0],
-      [:dir1, [Gem.user_dir, Gem.dir], m1],
+      [:dir0, [Gem.dir, Gem.user_dir]],
+      [:dir1, [Gem.user_dir, Gem.dir]],
     ]
 
-    tests.each do |name, paths, expected|
+    tests.each do |name, paths|
       Gem.use_paths paths.first, paths
-      Gem::Specification.reset
       Gem.searcher = nil
 
       assert_equal Gem::Dependency.new("m","1").to_specs,
                    Gem::Dependency.new("m","1").to_specs.sort
 
       assert_equal \
-        [expected.gem_dir],
-        Gem::Dependency.new("m","1").to_specs.map(&:gem_dir).sort,
+        [m0.gem_dir, m1.gem_dir],
+        Gem::Dependency.new("m","1").to_specs.map(&:gem_dir).uniq.sort,
         "Wrong specs for #{name}"
 
       spec = Gem::Dependency.new("m","1").to_spec
@@ -1608,15 +1618,17 @@ class TestGem < Gem::TestCase
     g = util_spec "g", "1", nil, "lib/g.rb"
     m = util_spec "m", "1", nil, "lib/m.rb"
 
-    install_gem g, :install_dir => Gem.dir
-    install_gem m, :install_dir => Gem.dir
-    install_gem m, :install_dir => Gem.user_dir
+    install_gem g, install_dir: Gem.dir
+    install_gem m, install_dir: Gem.dir
+    install_gem m, install_dir: Gem.user_dir
 
     Gem.use_paths Gem.dir, [Gem.dir, Gem.user_dir]
 
+    spec = Gem::Dependency.new("m", "1").to_spec
+
     assert_equal \
       File.join(Gem.dir, "gems", "m-1"),
-      Gem::Dependency.new("m","1").to_spec.gem_dir,
+      spec.gem_dir,
       "Wrong spec selected"
   end
 
@@ -1646,6 +1658,27 @@ class TestGem < Gem::TestCase
     assert_equal new_style, Gem.find_unresolved_default_spec("bar.rb")
     assert_nil              Gem.find_unresolved_default_spec("exec")
     assert_nil              Gem.find_unresolved_default_spec("README")
+  end
+
+  def test_register_default_spec_new_style_with_native_extension
+    Gem.clear_default_specs
+
+    dlext = RbConfig::CONFIG["DLEXT"]
+
+    new_style = Gem::Specification.new do |spec|
+      spec.name = "my_ext"
+      spec.version = "1.0"
+      spec.files = ["lib/my_ext.rb", "my_ext_core.#{dlext}", "ext/my_ext/my_ext_core.c", "README.md"]
+      spec.require_paths = ["lib"]
+    end
+
+    Gem.register_default_spec new_style
+
+    assert_equal new_style, Gem.find_unresolved_default_spec("my_ext.rb")
+    assert_equal new_style, Gem.find_unresolved_default_spec("my_ext_core")
+    assert_equal new_style, Gem.find_unresolved_default_spec("my_ext_core.#{dlext}")
+    assert_nil              Gem.find_unresolved_default_spec("ext/my_ext/my_ext_core.c")
+    assert_nil              Gem.find_unresolved_default_spec("README.md")
   end
 
   def test_register_default_spec_old_style_with_folder_starting_with_lib
@@ -1786,11 +1819,6 @@ class TestGem < Gem::TestCase
     @exec_path = File.join spec.full_gem_path, spec.bindir, "exec"
     @abin_path = File.join spec.full_gem_path, spec.bindir, "abin"
     spec
-  end
-
-  def util_remove_interrupt_command
-    Gem::Commands.send :remove_const, :InterruptCommand if
-      Gem::Commands.const_defined? :InterruptCommand
   end
 
   def util_cache_dir

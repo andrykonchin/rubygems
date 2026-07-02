@@ -38,7 +38,7 @@ class Gem::RequestSet::Lockfile
   end
 
   ##
-  # Creates a new Lockfile for the given +request_set+ and +gem_deps_file+
+  # Creates a new Lockfile for the given Gem::RequestSet and +gem_deps_file+
   # location.
 
   def self.build(request_set, gem_deps_file, dependencies = nil)
@@ -76,11 +76,6 @@ class Gem::RequestSet::Lockfile
     @dependencies  = dependencies
     @gem_deps_file = File.expand_path(gem_deps_file)
     @gem_deps_dir  = File.dirname(@gem_deps_file)
-
-    if RUBY_VERSION < "2.7"
-      @gem_deps_file.untaint unless gem_deps_file.tainted?
-    end
-
     @platforms = []
   end
 
@@ -236,5 +231,3 @@ class Gem::RequestSet::Lockfile
     @set.sorted_requests
   end
 end
-
-require_relative "lockfile/tokenizer"

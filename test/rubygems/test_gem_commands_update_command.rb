@@ -42,6 +42,34 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
     assert_empty out
   end
 
+  def test_execute_compact_index
+    spec_fetcher do |fetcher|
+      fetcher.gem "b", 1
+    end
+
+    b2, b2_gem = util_gem "b", 2
+    util_setup_compact_index b2
+    add_to_fetcher b2, b2_gem
+
+    # drop the in-memory tuples spec_fetcher pre-populated so the lookup
+    # goes through Gem::Source#load_specs
+    Gem::SpecFetcher.fetcher = nil
+
+    @cmd.options[:args] = []
+
+    use_ui @ui do
+      @cmd.execute
+    end
+
+    out = @ui.output.split "\n"
+    assert_equal "Updating installed gems", out.shift
+    assert_equal "Updating b", out.shift
+    assert_equal "Gems updated: b", out.shift
+    assert_empty out
+
+    assert_path_exist File.join(@gemhome, "specifications", "b-2.gemspec")
+  end
+
   def test_execute_multiple
     spec_fetcher do |fetcher|
       fetcher.download "a",  2
@@ -79,7 +107,6 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
     end
 
     out = @ui.output.split "\n"
-    assert_equal "Updating rubygems-update", out.shift
     assert_equal "Installing RubyGems 9", out.shift
     assert_equal "RubyGems system software updated", out.shift
 
@@ -123,13 +150,40 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
     end
 
     out = @ui.output.split "\n"
-    assert_equal "Updating rubygems-update", out.shift
     assert_empty out
 
     err = @ui.error.split "\n"
     assert_equal "ERROR:  Error installing rubygems-update:", err.shift
     assert_equal "\trubygems-update-9 requires Ruby version > 9. The current ruby version is #{Gem.ruby_version}.", err.shift
     assert_empty err
+  end
+
+  def test_execute_system_when_latest_does_not_support_your_ruby_but_previous_one_does
+    spec_fetcher do |fetcher|
+      fetcher.download "rubygems-update", 9 do |s|
+        s.files = %w[setup.rb]
+        s.required_ruby_version = "> 9"
+      end
+
+      fetcher.download "rubygems-update", 8 do |s|
+        s.files = %w[setup.rb]
+      end
+    end
+
+    @cmd.options[:args]          = []
+    @cmd.options[:system]        = true
+
+    use_ui @ui do
+      @cmd.execute
+    end
+
+    err = @ui.error.split "\n"
+    assert_empty err
+
+    out = @ui.output.split "\n"
+    assert_equal "Installing RubyGems 8", out.shift
+    assert_equal "RubyGems system software updated", out.shift
+    assert_empty out
   end
 
   def test_execute_system_multiple
@@ -151,7 +205,6 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
     end
 
     out = @ui.output.split "\n"
-    assert_equal "Updating rubygems-update", out.shift
     assert_equal "Installing RubyGems 9", out.shift
     assert_equal "RubyGems system software updated", out.shift
 
@@ -185,7 +238,6 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
     end
 
     out = @ui.output.split "\n"
-    assert_equal "Updating rubygems-update", out.shift
     assert_equal "Installing RubyGems 9", out.shift
     assert_equal "RubyGems system software updated", out.shift
 
@@ -193,7 +245,15 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
   end
 
   def test_execute_system_update_installed_in_non_default_gem_path
-    rubygems_update_spec = quick_gem "rubygems-update", 9 do |s|
+    rubygems_update_spec = Gem::Specification.new do |s|
+      s.name        = "rubygems-update"
+      s.version     = "9"
+      s.author      = "A User"
+      s.email       = "example@example.com"
+      s.homepage    = "http://example.com"
+      s.summary     = "this is a summary"
+      s.description = "This is a test description"
+
       write_file File.join(@tempdir, "setup.rb")
 
       s.files += %w[setup.rb]
@@ -205,7 +265,7 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
     gemhome2 = "#{@gemhome}2"
 
-    Gem::Installer.at(rubygems_update_package, :install_dir => gemhome2).install
+    Gem::Installer.at(rubygems_update_package, install_dir: gemhome2).install
 
     Gem.use_paths @gemhome, [gemhome2, @gemhome]
 
@@ -242,7 +302,6 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
     end
 
     out = @ui.output.split "\n"
-    assert_equal "Updating rubygems-update", out.shift
     assert_equal "Installing RubyGems 8", out.shift
     assert_equal "RubyGems system software updated", out.shift
 
@@ -353,7 +412,6 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
     end
 
     out = @ui.output.split "\n"
-    assert_equal "Updating rubygems-update", out.shift
     assert_equal "Installing RubyGems 9", out.shift
     assert_equal "RubyGems system software updated", out.shift
 
@@ -476,7 +534,7 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
     a2 = @specs["a-2"]
 
     assert_path_exist File.join(a2.doc_dir, "rdoc")
-  end
+  end if defined?(Gem::RDoc) && !Gem.rdoc_hooks_defined_via_plugin?
 
   def test_execute_named
     spec_fetcher do |fetcher|
@@ -666,14 +724,46 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
     assert_equal expected, @cmd.fetch_remote_gems(specs["a-1"])
   end
 
+  def test_pass_down_the_job_option_to_make
+    gemspec = nil
+
+    spec_fetcher do |fetcher|
+      fetcher.download "a", 3 do |spec|
+        gemspec = spec
+
+        extconf_path = "#{spec.gem_dir}/extconf.rb"
+
+        write_file(extconf_path) do |io|
+          io.puts "require 'mkmf'"
+          io.puts "create_makefile '#{spec.name}'"
+        end
+
+        spec.extensions = "extconf.rb"
+      end
+
+      fetcher.gem "a", 2
+    end
+
+    use_ui @ui do
+      @cmd.invoke("a", "-j2")
+    end
+
+    gem_make_out = File.read(File.join(gemspec.extension_dir, "gem_make.out"))
+    if vc_windows? && nmake_found?
+      refute_includes(gem_make_out, " -j2")
+    else
+      assert_includes(gem_make_out, "make -j2")
+    end
+  end
+
   def test_handle_options_system
     @cmd.handle_options %w[--system]
 
     expected = {
-      :args => [],
-      :document => %w[ri],
-      :force => false,
-      :system => true,
+      args: [],
+      document: %w[ri],
+      force: false,
+      system: true,
     }
 
     assert_equal expected, @cmd.options
@@ -689,10 +779,10 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
     @cmd.handle_options %w[--system 1.3.7]
 
     expected = {
-      :args => [],
-      :document => %w[ri],
-      :force => false,
-      :system => "1.3.7",
+      args: [],
+      document: %w[ri],
+      force: false,
+      system: "1.3.7",
     }
 
     assert_equal expected, @cmd.options

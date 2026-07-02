@@ -2,7 +2,10 @@ name: bundler
 
 on:
   pull_request:
-  merge_group:
+
+  push:
+    branches:
+      - master
 
 concurrency:
   group: ci-${{ github.ref }}-${{ github.workflow }}
@@ -17,63 +20,166 @@ defaults:
 
 jobs:
   bundler:
-    name: Bundler ${{ matrix.bundler.name }} on ${{ matrix.os.name }} (${{ matrix.ruby.name }})
+    name: Bundler on ${{ matrix.os.name }} (${{ matrix.ruby.name }})
     runs-on: ${{ matrix.os.value }}
     strategy:
       fail-fast: false
       matrix:
         os:
-          - { name: Ubuntu, value: ubuntu-22.04 }
+          - { name: Ubuntu, value: ubuntu-24.04 }
 
         ruby:
-          - { name: ruby-2.6, value: 2.6.10 }
-          - { name: ruby-2.7, value: 2.7.7 }
-          - { name: ruby-3.0, value: 3.0.5 }
-          - { name: ruby-3.1, value: 3.1.3 }
-          - { name: ruby-3.2, value: 3.2.1 }
-
-        bundler:
-          - { name: 2, value: '' }
-          - { name: 3, value: 3.0.0 }
-
-        exclude:
-          - { bundler: { name: 3, value: 3.0.0 }, ruby: { name: ruby-2.6, value: 2.6.10 } }
+          - { name: ruby-3.2, value: 3.2.11 }
+          - { name: ruby-3.3, value: 3.3.11 }
+          - { name: ruby-3.4, value: 3.4.9 }
+          - { name: ruby-4.0, value: 4.0.5 }
 
         include:
-          - { os: { name: macOS, value: macos-12 }, bundler: { name: 2, value: '' }, ruby: { name: ruby-3.0, value: 3.0.5 }, timeout: 90 }
-          - { os: { name: macOS, value: macos-12 }, bundler: { name: 2, value: '' }, ruby: { name: ruby-3.1, value: 3.1.3 }, timeout: 90 }
-          - { os: { name: macOS, value: macos-12 }, bundler: { name: 2, value: '' }, ruby: { name: ruby-2.7, value: 2.7.7 }, timeout: 90 }
-          - { os: { name: macOS, value: macos-12 }, bundler: { name: 2, value: '' }, ruby: { name: ruby-3.2, value: 3.2.1 }, timeout: 90 }
+          - { os: { name: macOS, value: macos-26 }, ruby: { name: ruby-3.2, value: 3.2.11 }, timeout: 90 }
+          - { os: { name: macOS, value: macos-26 }, ruby: { name: ruby-3.3, value: 3.3.11 }, timeout: 90 }
+          - { os: { name: macOS, value: macos-26 }, ruby: { name: ruby-3.4, value: 3.4.9 }, timeout: 90 }
+          - { os: { name: macOS, value: macos-26 }, ruby: { name: ruby-4.0, value: 4.0.5 }, timeout: 90 }
 
-          - { os: { name: Windows, value: windows-2022 }, bundler: { name: 2, value: '' }, ruby: { name: ruby-2.7, value: 2.7.7 }, timeout: 150 }
-          - { os: { name: Windows, value: windows-2022 }, bundler: { name: 2, value: '' }, ruby: { name: ruby-3.0, value: 3.0.5 }, timeout: 150 }
-          - { os: { name: Windows, value: windows-2022 }, bundler: { name: 2, value: '' }, ruby: { name: ruby-3.1, value: 3.1.3 }, timeout: 150 }
-          - { os: { name: Windows, value: windows-2022 }, bundler: { name: 2, value: '' }, ruby: { name: ruby-3.2, value: 3.2.1 }, timeout: 150 }
+          # Regression coverage for the Intel architecture with the latest Ruby only.
+          # Split across runners using the test shards to keep each run reasonable.
+          - { os: { name: macOS-intel, value: macos-15-intel }, ruby: { name: ruby-4.0, value: 4.0.5 }, timeout: 90, shard: a }
+          - { os: { name: macOS-intel, value: macos-15-intel }, ruby: { name: ruby-4.0, value: 4.0.5 }, timeout: 90, shard: b }
+          - { os: { name: macOS-intel, value: macos-15-intel }, ruby: { name: ruby-4.0, value: 4.0.5 }, timeout: 90, shard: c }
+          - { os: { name: macOS-intel, value: macos-15-intel }, ruby: { name: ruby-4.0, value: 4.0.5 }, timeout: 90, shard: d }
+
+          # Ruby 3.2 is about 20 minutes slower than 3.3/3.4, so it will be excluded from testing.
+          - { os: { name: Windows, value: windows-2025 }, ruby: { name: ruby-3.3, value: 3.3.11 }, timeout: 150, shard: a }
+          - { os: { name: Windows, value: windows-2025 }, ruby: { name: ruby-3.3, value: 3.3.11 }, timeout: 150, shard: b }
+          - { os: { name: Windows, value: windows-2025 }, ruby: { name: ruby-3.3, value: 3.3.11 }, timeout: 150, shard: c }
+          - { os: { name: Windows, value: windows-2025 }, ruby: { name: ruby-3.3, value: 3.3.11 }, timeout: 150, shard: d }
+          - { os: { name: Windows, value: windows-2025 }, ruby: { name: ruby-3.4, value: 3.4.9 }, timeout: 150, shard: a }
+          - { os: { name: Windows, value: windows-2025 }, ruby: { name: ruby-3.4, value: 3.4.9 }, timeout: 150, shard: b }
+          - { os: { name: Windows, value: windows-2025 }, ruby: { name: ruby-3.4, value: 3.4.9 }, timeout: 150, shard: c }
+          - { os: { name: Windows, value: windows-2025 }, ruby: { name: ruby-3.4, value: 3.4.9 }, timeout: 150, shard: d }
+          - { os: { name: Windows, value: windows-2025 }, ruby: { name: ruby-4.0, value: 4.0.5 }, timeout: 150, shard: a }
+          - { os: { name: Windows, value: windows-2025 }, ruby: { name: ruby-4.0, value: 4.0.5 }, timeout: 150, shard: b }
+          - { os: { name: Windows, value: windows-2025 }, ruby: { name: ruby-4.0, value: 4.0.5 }, timeout: 150, shard: c }
+          - { os: { name: Windows, value: windows-2025 }, ruby: { name: ruby-4.0, value: 4.0.5 }, timeout: 150, shard: d }
+
+          - { os: { name: Ubuntu, value: ubuntu-24.04 }, ruby: { name: jruby, value: jruby-10.1.0.0 } }
+          - { os: { name: macOS, value: macos-26 }, ruby: { name: jruby, value: jruby-10.1.0.0 } }
+          - { os: { name: Windows, value: windows-2025 }, ruby: { name: jruby, value: jruby-10.1.0.0 } }
+
+          - { os: { name: Ubuntu, value: ubuntu-24.04 }, ruby: { name: truffleruby, value: truffleruby-34.0.1 }, timeout: 20 }
+
+          - { os: { name: Ubuntu, value: ubuntu-24.04 }, ruby: { name: ruby-4.0 (psych), value: 4.0.5 }, use_psych: true }
+
+          # Regression coverage for release branches, where the version constants
+          # do not have a .dev suffix and behave differently.
+          - { os: { name: Ubuntu, value: ubuntu-24.04 }, ruby: { name: ruby-4.0 (release version), value: 4.0.5 }, strip_dev: true }
 
     env:
-      RGV: ..
+      RGV: .
       RUBYOPT: --disable-gems
+      RUBYGEMS_USE_PSYCH: ${{ matrix.use_psych || 'false' }}
     steps:
-      - uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - name: Setup ruby
-        uses: ruby/setup-ruby@250fcd6a742febb1123a77a841497ccaa8b9e939 # v1.152.0
+        uses: ruby/setup-ruby@0dafeac902942906541bc140009cdbf32665b601 # v1.315.0
         with:
           ruby-version: ${{ matrix.ruby.value }}
           bundler: none
-      - name: Install graphviz (Ubuntu)
-        run: sudo apt-get install graphviz -y
-        if: matrix.bundler.value == '' && matrix.os.name == 'Ubuntu'
-      - name: Install graphviz (macOS)
-        run: brew install graphviz
-        if: matrix.bundler.value == '' && matrix.os.name == 'macOS'
+      - name: Simulate a release version by stripping .dev
+        run: ruby -i -pe 'sub(/^(\s*VERSION = ")(\d+\.\d+\.\d+)\.dev/, "\\1\\2")' lib/rubygems.rb lib/bundler/version.rb
+        if: matrix.strip_dev
+      - name: Restore gem caches
+        uses: actions/cache/restore@v6
+        id: restore-cache
+        with:
+          path: |
+            tmp/gems/base
+            tmp/gems/standard
+            tmp/gems/rubocop
+          key: gem-cache-${{ hashFiles('tool/bundler/test_gems.rb.lock', 'tool/bundler/standard_gems.rb.lock', 'tool/bundler/rubocop_gems.rb.lock') }}-${{ matrix.ruby.value }}-${{ matrix.os.name }}
+      - name: Install test dependencies
+        if: steps.restore-cache.outputs.cache-hit != 'true'
+        run: bundle install
+        env:
+          BUNDLE_PATH: ../../tmp/gems/base
+          BUNDLE_GEMFILE: tool/bundler/test_gems.rb
+          BUNDLE_CLEAN: 1
+      - name: Install standard dependencies
+        if: steps.restore-cache.outputs.cache-hit != 'true'
+        run: bundle install
+        env:
+          BUNDLE_PATH: ../../tmp/gems/standard
+          BUNDLE_GEMFILE: tool/bundler/standard_gems.rb
+          BUNDLE_CLEAN: 1
+      - name: Install rubocop dependencies
+        if: steps.restore-cache.outputs.cache-hit != 'true'
+        run: bundle install
+        env:
+          BUNDLE_PATH: ../../tmp/gems/rubocop
+          BUNDLE_GEMFILE: tool/bundler/rubocop_gems.rb
+          BUNDLE_CLEAN: 1
+      - name: Save gems cache
+        if: steps.restore-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            tmp/gems/base
+            tmp/gems/standard
+            tmp/gems/rubocop
+          key: ${{ steps.restore-cache.outputs.cache-primary-key }}
+      - name: Setup java
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
+        with:
+          distribution: temurin
+          java-version: 21.0.7
+        if: matrix.ruby.name == 'jruby'
       - name: Prepare dependencies
         run: |
-          bin/rake spec:parallel_deps
-      - name: Replace version
-        run: BUNDLER_SPEC_SUB_VERSION=${{ matrix.bundler.value }} bin/rake override_version
-        if: matrix.bundler.value != ''
-      - name: Run Test
+          bin/rake dev:deps
+      - name: Run Test (CRuby)
         run: |
           bin/parallel_rspec
-        working-directory: ./bundler
+        if: matrix.ruby.name != 'jruby' && matrix.ruby.name != 'truffleruby' && matrix.os.name != 'Windows' && matrix.os.name != 'macOS-intel'
+      - name: Run Test (CRuby on Windows - Shard ${{ matrix.shard }})
+        run: |
+          bin/parallel_rspec --tag shard_${{ matrix.shard }}
+        if: matrix.ruby.name != 'jruby' && matrix.ruby.name != 'truffleruby' && matrix.os.name == 'Windows'
+      - name: Run Test (CRuby on macOS Intel - Shard ${{ matrix.shard }})
+        run: |
+          bin/parallel_rspec --tag shard_${{ matrix.shard }}
+        if: matrix.ruby.name != 'jruby' && matrix.ruby.name != 'truffleruby' && matrix.os.name == 'macOS-intel'
+      - name: Run Test (JRuby)
+        run: |
+          bin/parallel_rspec --tag jruby_only --tag jruby
+        if: matrix.ruby.name == 'jruby' && matrix.os.name != 'Windows'
+      - name: Run Test (TruffleRuby)
+        run: |
+          bin/rspec --tag truffleruby_only --tag truffleruby
+        if: matrix.ruby.name == 'truffleruby'
+      - name: Run a warbler project
+        run: |
+          bin/rake bundler:install:local
+          cd spec/realworld/fixtures/warbler
+          bundle install
+          bundle exec warble
+          java -jar warbler.jar
+        if: matrix.ruby.name == 'jruby' && matrix.os.name == 'Ubuntu'
+
     timeout-minutes: ${{ matrix.timeout || 60 }}
+
+  all-pass:
+    name: All bundler jobs pass
+
+    if: always()
+
+    needs:
+      - bundler
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: check dependent jobs
+        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
+        with:
+          jobs: ${{ toJSON(needs) }}

@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require_relative "../shellwords"
-
 # This class is used by rubygems to build Rust extensions. It is a thin-wrapper
 # over the `cargo rustc` command which takes care of building Rust code in a way
 # that Ruby can use.
@@ -16,9 +14,14 @@ class Gem::Ext::CargoBuilder < Gem::Ext::Builder
     @profile = :release
   end
 
-  def build(extension, dest_path, results, args = [], lib_dir = nil, cargo_dir = Dir.pwd)
+  def build(extension, dest_path, results, args = [], lib_dir = nil, cargo_dir = Dir.pwd,
+    target_rbconfig = Gem.target_rbconfig, n_jobs: nil)
     require "tempfile"
     require "fileutils"
+
+    if target_rbconfig.path
+      warn "--target-rbconfig is not yet supported for Rust extensions. Ignoring"
+    end
 
     # Where's the Cargo.toml of the crate we're building
     cargo_toml = File.join(cargo_dir, "Cargo.toml")
@@ -47,7 +50,6 @@ class Gem::Ext::CargoBuilder < Gem::Ext::Builder
 
       nesting = extension_nesting(extension)
 
-      # TODO: remove in RubyGems 4
       if Gem.install_extension_in_lib && lib_dir
         nested_lib_dir = File.join(lib_dir, nesting)
         FileUtils.mkdir_p nested_lib_dir
@@ -155,7 +157,11 @@ class Gem::Ext::CargoBuilder < Gem::Ext::Builder
   # We want to use the same linker that Ruby uses, so that the linker flags from
   # mkmf work properly.
   def linker_args
-    cc_flag = Shellwords.split(makefile_config("CC"))
+    cc_flag = self.class.shellsplit(makefile_config("CC"))
+    # Avoid to ccache like tool from Rust build
+    # see https://github.com/ruby/rubygems/pull/8521#issuecomment-2689854359
+    # ex. CC="ccache gcc" or CC="sccache clang --any --args"
+    cc_flag.shift if cc_flag.size >= 2 && !cc_flag[1].start_with?("-")
     linker = cc_flag.shift
     link_args = cc_flag.flat_map {|a| ["-C", "link-arg=#{a}"] }
 
@@ -174,7 +180,7 @@ class Gem::Ext::CargoBuilder < Gem::Ext::Builder
 
   def libruby_args(dest_dir)
     libs = makefile_config(ruby_static? ? "LIBRUBYARG_STATIC" : "LIBRUBYARG_SHARED")
-    raw_libs = Shellwords.split(libs)
+    raw_libs = self.class.shellsplit(libs)
     raw_libs.flat_map {|l| ldflag_to_link_modifier(l) }
   end
 
@@ -185,6 +191,7 @@ class Gem::Ext::CargoBuilder < Gem::Ext::Builder
   end
 
   def cargo_dylib_path(dest_path, crate_name)
+    so_ext = RbConfig::CONFIG["SOEXT"]
     prefix = so_ext == "dll" ? "" : "lib"
     path_parts = [dest_path]
     path_parts << ENV["CARGO_BUILD_TARGET"] if ENV["CARGO_BUILD_TARGET"]
@@ -198,7 +205,7 @@ class Gem::Ext::CargoBuilder < Gem::Ext::Builder
 
     output, status =
       begin
-        Open3.capture2e(cargo, "metadata", "--no-deps", "--format-version", "1", :chdir => cargo_dir)
+        Open3.capture2e(cargo, "metadata", "--no-deps", "--format-version", "1", chdir: cargo_dir)
       rescue StandardError => error
         raise Gem::InstallError, "cargo metadata failed #{error.message}"
       end
@@ -220,10 +227,9 @@ class Gem::Ext::CargoBuilder < Gem::Ext::Builder
       raise Gem::InstallError, "cargo metadata failed#{exit_reason}"
     end
 
-    # cargo metadata output is specified as json, but with the
-    # --format-version 1 option the output is compatible with YAML, so we can
-    # avoid the json dependency
-    metadata = Gem::SafeYAML.safe_load(output)
+    # cargo metadata output is specified as json
+    require "json"
+    metadata = JSON.parse(output)
     package = metadata["packages"].find {|pkg| normalize_path(pkg["manifest_path"]) == manifest_path }
     unless package
       found = metadata["packages"].map {|md| "#{md["name"]} at #{md["manifest_path"]}" }
@@ -247,8 +253,7 @@ EOF
 
   def rustc_dynamic_linker_flags(dest_dir, crate_name)
     split_flags("DLDFLAGS").
-      map {|arg| maybe_resolve_ldflag_variable(arg, dest_dir, crate_name) }.
-      compact.
+      filter_map {|arg| maybe_resolve_ldflag_variable(arg, dest_dir, crate_name) }.
       flat_map {|arg| ldflag_to_link_modifier(arg) }
   end
 
@@ -257,7 +262,7 @@ EOF
   end
 
   def split_flags(var)
-    Shellwords.split(RbConfig::CONFIG.fetch(var, ""))
+    self.class.shellsplit(RbConfig::CONFIG.fetch(var, ""))
   end
 
   def ldflag_to_link_modifier(arg)
@@ -293,7 +298,7 @@ EOF
 
     case var_name
     # On windows, it is assumed that mkmf has setup an exports file for the
-    # extension, so we have to to create one ourselves.
+    # extension, so we have to create one ourselves.
     when "DEFFILE"
       write_deffile(dest_dir, crate_name)
     else
@@ -311,22 +316,6 @@ EOF
     end
 
     deffile_path
-  end
-
-  # We have to basically reimplement RbConfig::CONFIG['SOEXT'] here to support
-  # Ruby < 2.5
-  #
-  # @see https://github.com/ruby/ruby/blob/c87c027f18c005460746a74c07cd80ee355b16e4/configure.ac#L3185
-  def so_ext
-    return RbConfig::CONFIG["SOEXT"] if RbConfig::CONFIG.key?("SOEXT")
-
-    if win_target?
-      "dll"
-    elsif darwin_target?
-      "dylib"
-    else
-      "so"
-    end
   end
 
   # Corresponds to $(LIBPATH) in mkmf

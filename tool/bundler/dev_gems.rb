@@ -3,18 +3,19 @@
 source "https://rubygems.org"
 
 gem "test-unit", "~> 3.0"
-gem "rake", "~> 13.0"
-gem "rb_sys"
+gem "test-unit-ruby-core"
+gem "rake", "~> 13.1"
+gem "rb_sys", ">= 0.9.128"
 
-gem "webrick", "~> 1.6"
-gem "turbo_tests", "~> 2.1"
-gem "parallel_tests", "< 3.9.0"
+gem "turbo_tests", "~> 2.2.3"
+gem "parallel_tests", "~> 4.10.1"
 gem "parallel", "~> 1.19"
 gem "rspec-core", "~> 3.12"
 gem "rspec-expectations", "~> 3.12"
 gem "rspec-mocks", "~> 3.12"
-gem "uri", "~> 0.12.0"
+gem "rubygems-generate_index", "~> 1.1"
+gem "simplecov", "~> 0.22"
 
 group :doc do
-  gem "ronn", "~> 0.7.3", :platform => :ruby
+  gem "ronn-ng", "~> 0.10.1", platform: :ruby
 end

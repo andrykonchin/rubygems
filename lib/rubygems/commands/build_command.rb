@@ -1,11 +1,13 @@
 # frozen_string_literal: true
 
 require_relative "../command"
+require_relative "../gemspec_helpers"
 require_relative "../package"
 require_relative "../version_option"
 
 class Gem::Commands::BuildCommand < Gem::Command
   include Gem::VersionOption
+  include Gem::GemspecHelpers
 
   def initialize
     super "build", "Build a gem from a gemspec"
@@ -23,13 +25,6 @@ class Gem::Commands::BuildCommand < Gem::Command
     add_option "-o", "--output FILE", "output gem with the given filename" do |value, options|
       options[:output] = value
     end
-
-    add_option "-C PATH", "Run as if gem build was started in <PATH> instead of the current working directory." do |value, options|
-      options[:build_path] = value
-    end
-    deprecate_option "-C",
-                     version: "4.0",
-                     extra_msg: "-C is a global flag now. Use `gem -C PATH build GEMSPEC_FILE [options]` instead"
   end
 
   def arguments # :nodoc:
@@ -74,17 +69,6 @@ Gems can be saved to a specified filename with the output option:
   end
 
   private
-
-  def find_gemspec(glob = "*.gemspec")
-    gemspecs = Dir.glob(glob).sort
-
-    if gemspecs.size > 1
-      alert_error "Multiple gemspecs found: #{gemspecs}, please specify one"
-      terminate_interaction(1)
-    end
-
-    gemspecs.first
-  end
 
   def build_gem
     gemspec = resolve_gem_name

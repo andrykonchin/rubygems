@@ -39,7 +39,7 @@ permission to.
     add_proxy_option
     add_key_option
     add_otp_option
-    defaults.merge! :add => [], :remove => []
+    defaults.merge! add: [], remove: []
 
     add_option "-a", "--add NEW_OWNER", "Add an owner by user identifier" do |value, options|
       options[:add] << value
@@ -75,11 +75,12 @@ permission to.
     end
 
     with_response response do |resp|
-      owners = Gem::SafeYAML.load clean_text(resp.body)
+      owners = Gem::SafeYAML.safe_load clean_text(resp.body)
 
       say "Owners for gem: #{name}"
       owners.each do |owner|
-        say "- #{owner["email"] || owner["handle"] || owner["id"]}"
+        identifier = owner["email"] || owner["handle"] || owner["id"]
+        say "- #{identifier} (#{owner["role"]})"
       end
     end
   end

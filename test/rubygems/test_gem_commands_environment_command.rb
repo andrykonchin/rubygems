@@ -30,7 +30,7 @@ class TestGemCommandsEnvironmentCommand < Gem::TestCase
     assert_match(/USER INSTALLATION DIRECTORY: #{Regexp.escape Gem.user_dir}/,
                  @ui.output)
     assert_match(/RUBYGEMS PREFIX: /, @ui.output)
-    assert_match(/RUBY EXECUTABLE:.*#{RbConfig::CONFIG['ruby_install_name']}/,
+    assert_match(/RUBY EXECUTABLE:.*#{RbConfig::CONFIG["ruby_install_name"]}/,
                  @ui.output)
     assert_match(/GIT EXECUTABLE: #{@cmd.send(:git_path)}/, @ui.output)
     assert_match(/SYSTEM CONFIGURATION DIRECTORY:/, @ui.output)
@@ -163,5 +163,9 @@ class TestGemCommandsEnvironmentCommand < Gem::TestCase
 
     assert_equal "#{Gem.platforms.join File::PATH_SEPARATOR}\n", @ui.output
     assert_equal "", @ui.error
+  end
+
+  def test_description_mentions_concurrent_downloads
+    assert_match(/:concurrent_downloads:/, @cmd.description)
   end
 end

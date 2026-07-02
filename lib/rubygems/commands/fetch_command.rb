@@ -10,8 +10,8 @@ class Gem::Commands::FetchCommand < Gem::Command
 
   def initialize
     defaults = {
-      :suggest_alternate => true,
-      :version => Gem::Requirement.default,
+      suggest_alternate: true,
+      version: Gem::Requirement.default,
     }
 
     super "fetch", "Download a gem and place it in the current directory", defaults
@@ -56,13 +56,24 @@ then repackaging it.
     if options[:version] != Gem::Requirement.default &&
        get_all_gem_names.size > 1
       alert_error "Can't use --version with multiple gems. You can specify multiple gems with" \
-                  " version requirements using `gem fetch 'my_gem:1.0.0' 'my_other_gem:~>2.0.0'`"
+                  " version requirements using `gem fetch 'my_gem:1.0.0' 'my_other_gem:>=2'`"
       terminate_interaction 1
     end
   end
 
   def execute
     check_version
+
+    exit_code = fetch_gems
+
+    terminate_interaction exit_code
+  end
+
+  private
+
+  def fetch_gems
+    exit_code = 0
+
     version = options[:version]
 
     platform  = Gem.platforms.last
@@ -86,10 +97,13 @@ then repackaging it.
 
       if spec.nil?
         show_lookup_failure gem_name, gem_version, errors, suppress_suggestions, options[:domain]
+        exit_code |= 2
         next
       end
       source.download spec
       say "Downloaded #{spec.full_name}"
     end
+
+    exit_code
   end
 end

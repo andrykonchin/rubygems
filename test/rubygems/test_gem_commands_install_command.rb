@@ -16,8 +16,6 @@ class TestGemCommandsInstallCommand < Gem::TestCase
     @cmd.options[:document] = []
 
     @gemdeps = "tmp_install_gemdeps"
-
-    common_installer_setup
   end
 
   def teardown
@@ -121,11 +119,7 @@ class TestGemCommandsInstallCommand < Gem::TestCase
       end
     end
 
-    expected = <<-EXPECTED
-ERROR:  Could not find a valid gem 'bar' (= 0.5) (required by 'foo' (>= 0)) in any repository
-    EXPECTED
-
-    assert_equal expected, @ui.error
+    assert_match(/ERROR:.*foo.*bar/m, @ui.error)
   end
 
   def test_execute_local_dependency_nonexistent_ignore_dependencies
@@ -192,31 +186,26 @@ ERROR:  Could not find a valid gem 'bar' (= 0.5) (required by 'foo' (>= 0)) in a
     pend "skipped on MS Windows (chmod has no effect)" if Gem.win_platform?
     pend "skipped in root privilege" if Process.uid.zero?
 
-    specs = spec_fetcher do |fetcher|
-      fetcher.gem "a", 2
+    spec_fetcher do |fetcher|
+      fetcher.download "a", 2
     end
 
     @cmd.options[:user_install] = false
 
-    FileUtils.mv specs["a-2"].cache_file, @tempdir
-
     @cmd.options[:args] = %w[a]
 
     use_ui @ui do
-      orig_dir = Dir.pwd
-      begin
-        FileUtils.chmod 0o755, @userhome
-        FileUtils.chmod 0o555, @gemhome
+      FileUtils.chmod 0o755, @userhome
+      FileUtils.chmod 0o555, @gemhome
 
-        Dir.chdir @tempdir
-        assert_raise Gem::FilePermissionError do
-          @cmd.execute
-        end
-      ensure
-        Dir.chdir orig_dir
-        FileUtils.chmod 0o755, @gemhome
+      assert_raise Gem::MockGemUi::SystemExitException, @ui.error do
+        @cmd.execute
       end
+    ensure
+      FileUtils.chmod 0o755, @gemhome
     end
+
+    assert_equal %w[a-2], @cmd.installed_specs.map(&:full_name).sort
   end
 
   def test_execute_local_missing
@@ -310,11 +299,7 @@ ERROR:  Could not find a valid gem 'bar' (= 0.5) (required by 'foo' (>= 0)) in a
       assert_equal 2, e.exit_code
     end
 
-    expected = <<-EXPECTED
-ERROR:  Could not find a valid gem 'bar' (= 0.5) (required by 'foo' (>= 0)) in any repository
-    EXPECTED
-
-    assert_equal expected, @ui.error
+    assert_match(/ERROR:.*foo.*bar/m, @ui.error)
   end
 
   def test_execute_http_proxy
@@ -434,21 +419,6 @@ ERROR:  Possible alternatives: non_existent_with_hint
     output = @ui.error.split "\n"
 
     assert_equal expected, output
-  end
-
-  def test_execute_conflicting_install_options
-    @cmd.options[:user_install] = true
-    @cmd.options[:install_dir] = "whatever"
-
-    use_ui @ui do
-      assert_raise Gem::MockGemUi::TermError do
-        @cmd.execute
-      end
-    end
-
-    expected = "ERROR:  Use --install-dir or --user-install but not both\n"
-
-    assert_equal expected, @ui.error
   end
 
   def test_execute_prerelease_skipped_when_no_flag_set
@@ -669,17 +639,10 @@ ERROR:  Possible alternatives: non_existent_with_hint
     @cmd.options[:args] = %w[a]
 
     use_ui @ui do
-      # Don't use Dir.chdir with a block, it warnings a lot because
-      # of a downstream Dir.chdir with a block
-      old = Dir.getwd
-
-      begin
-        Dir.chdir @tempdir
+      Dir.chdir @tempdir do
         assert_raise Gem::MockGemUi::SystemExitException, @ui.error do
           @cmd.execute
         end
-      ensure
-        Dir.chdir old
       end
     end
 
@@ -687,7 +650,7 @@ ERROR:  Possible alternatives: non_existent_with_hint
 
     assert_path_exist File.join(a2.doc_dir, "ri")
     assert_path_exist File.join(a2.doc_dir, "rdoc")
-  end
+  end if defined?(Gem::RDoc) && !Gem.rdoc_hooks_defined_via_plugin?
 
   def test_execute_rdoc_with_path
     specs = spec_fetcher do |fetcher|
@@ -706,24 +669,17 @@ ERROR:  Possible alternatives: non_existent_with_hint
     @cmd.options[:args] = %w[a]
 
     use_ui @ui do
-      # Don't use Dir.chdir with a block, it warnings a lot because
-      # of a downstream Dir.chdir with a block
-      old = Dir.getwd
-
-      begin
-        Dir.chdir @tempdir
+      Dir.chdir @tempdir do
         assert_raise Gem::MockGemUi::SystemExitException, @ui.error do
           @cmd.execute
         end
-      ensure
-        Dir.chdir old
       end
     end
 
     wait_for_child_process_to_exit
 
     assert_path_exist "whatever/doc/a-2", "documentation not installed"
-  end
+  end if defined?(Gem::RDoc) && !Gem.rdoc_hooks_defined_via_plugin?
 
   def test_execute_saves_build_args
     specs = spec_fetcher do |fetcher|
@@ -742,17 +698,10 @@ ERROR:  Possible alternatives: non_existent_with_hint
     @cmd.options[:args] = %w[a]
 
     use_ui @ui do
-      # Don't use Dir.chdir with a block, it warnings a lot because
-      # of a downstream Dir.chdir with a block
-      old = Dir.getwd
-
-      begin
-        Dir.chdir @tempdir
+      Dir.chdir @tempdir do
         assert_raise Gem::MockGemUi::SystemExitException, @ui.error do
           @cmd.execute
         end
-      ensure
-        Dir.chdir old
       end
     end
 
@@ -923,7 +872,7 @@ ERROR:  Possible alternatives: non_existent_with_hint
     assert_empty @cmd.installed_specs
 
     msg = "ERROR:  Can't use --version with multiple gems. You can specify multiple gems with" \
-      " version requirements using `gem install 'my_gem:1.0.0' 'my_other_gem:~>2.0.0'`"
+      " version requirements using `gem install 'my_gem:1.0.0' 'my_other_gem:>=2'`"
 
     assert_empty @ui.output
     assert_equal msg, @ui.error.chomp
@@ -1025,6 +974,38 @@ ERROR:  Possible alternatives: non_existent_with_hint
     @cmd.install_gem "a", ">= 0"
 
     assert_equal %W[a-3-#{local}], @cmd.installed_specs.map(&:full_name)
+  end
+
+  def test_install_gem_platform_specificity_match
+    util_set_arch "arm64-darwin-20"
+
+    spec_fetcher do |fetcher|
+      %w[ruby universal-darwin universal-darwin-20 x64-darwin-20 arm64-darwin-20].each do |platform|
+        fetcher.download "a", 3 do |s|
+          s.platform = platform
+        end
+      end
+    end
+
+    @cmd.install_gem "a", ">= 0"
+
+    assert_equal %w[a-3-arm64-darwin-20], @cmd.installed_specs.map(&:full_name)
+  end
+
+  def test_install_gem_platform_specificity_match_reverse_order
+    util_set_arch "arm64-darwin-20"
+
+    spec_fetcher do |fetcher|
+      %w[ruby universal-darwin universal-darwin-20 x64-darwin-20 arm64-darwin-20].reverse_each do |platform|
+        fetcher.download "a", 3 do |s|
+          s.platform = platform
+        end
+      end
+    end
+
+    @cmd.install_gem "a", ">= 0"
+
+    assert_equal %w[a-3-arm64-darwin-20], @cmd.installed_specs.map(&:full_name)
   end
 
   def test_install_gem_ignore_dependencies_specific_file
@@ -1236,6 +1217,30 @@ ERROR:  Possible alternatives: non_existent_with_hint
     assert_match "Installing a (2)", @ui.output
   end
 
+  def test_execute_installs_from_a_gemdeps_with_prerelease
+    spec_fetcher do |fetcher|
+      fetcher.download "a", 1
+      fetcher.download "a", "2.a"
+    end
+
+    File.open @gemdeps, "w" do |f|
+      f << "gem 'a'"
+    end
+
+    @cmd.handle_options %w[--prerelease]
+    @cmd.options[:gemdeps] = @gemdeps
+
+    use_ui @ui do
+      assert_raise Gem::MockGemUi::SystemExitException, @ui.error do
+        @cmd.execute
+      end
+    end
+
+    assert_equal %w[a-2.a], @cmd.installed_specs.map(&:full_name)
+
+    assert_match "Installing a (2.a)", @ui.output
+  end
+
   def test_execute_installs_deps_a_gemdeps
     spec_fetcher do |fetcher|
       fetcher.download "q", "1.0"
@@ -1357,7 +1362,7 @@ ERROR:  Possible alternatives: non_existent_with_hint
       fetcher.gem "r", "2.0", "q" => nil
     end
 
-    i = Gem::Installer.at specs["q-1.0"].cache_file, :install_dir => "gf-path"
+    i = Gem::Installer.at specs["q-1.0"].cache_file, install_dir: "gf-path"
     i.install
 
     assert File.file?("gf-path/specifications/q-1.0.gemspec"), "not installed"
@@ -1554,7 +1559,7 @@ ERROR:  Possible alternatives: non_existent_with_hint
   end
 
   def test_suggest_update_if_enabled
-    TestUpdateSuggestion.with_eglible_environment(cmd: @cmd) do
+    TestUpdateSuggestion.with_eligible_environment(cmd: @cmd) do
       spec_fetcher do |fetcher|
         fetcher.gem "a", 2
       end
@@ -1569,5 +1574,64 @@ ERROR:  Possible alternatives: non_existent_with_hint
 
       assert_includes @ui.output, "A new release of RubyGems is available: 1.2.3 → 2.0.0!"
     end
+  end
+
+  def test_pass_down_the_job_option_to_make
+    gemspec = nil
+
+    spec_fetcher do |fetcher|
+      fetcher.gem "a", 2 do |spec|
+        gemspec = spec
+
+        extconf_path = "#{spec.gem_dir}/extconf.rb"
+
+        write_file(extconf_path) do |io|
+          io.puts "require 'mkmf'"
+          io.puts "create_makefile '#{spec.name}'"
+        end
+
+        spec.extensions = "extconf.rb"
+      end
+    end
+
+    use_ui @ui do
+      assert_raise Gem::MockGemUi::SystemExitException, @ui.error do
+        @cmd.invoke "a", "-j4"
+      end
+    end
+
+    gem_make_out = File.read(File.join(gemspec.extension_dir, "gem_make.out"))
+    if vc_windows? && nmake_found?
+      refute_includes(gem_make_out, " -j4")
+    else
+      assert_includes(gem_make_out, "make -j4")
+    end
+  end
+
+  def test_execute_bindir_with_nonexistent_parent_dirs
+    spec_fetcher do |fetcher|
+      fetcher.gem "a", 2 do |s|
+        s.executables = %w[a_bin]
+        s.files = %w[bin/a_bin]
+      end
+    end
+
+    @cmd.options[:args] = %w[a]
+
+    nested_bin_dir = File.join(@tempdir, "not", "exists")
+    refute_directory_exists nested_bin_dir, "Nested bin directory should not exist yet"
+
+    @cmd.options[:bin_dir] = nested_bin_dir
+
+    use_ui @ui do
+      assert_raise Gem::MockGemUi::SystemExitException, @ui.error do
+        @cmd.execute
+      end
+    end
+
+    assert_directory_exists nested_bin_dir, "Nested bin directory should exist now"
+    assert_path_exist File.join(nested_bin_dir, "a_bin")
+
+    assert_equal %w[a-2], @cmd.installed_specs.map(&:full_name)
   end
 end

@@ -25,12 +25,31 @@ module Gem
       runtime
     ].freeze
 
-    def self.safe_load(input)
-      ::Psych.safe_load(input, permitted_classes: PERMITTED_CLASSES, permitted_symbols: PERMITTED_SYMBOLS, aliases: true)
+    @aliases_enabled = true
+    def self.aliases_enabled=(value) # :nodoc:
+      @aliases_enabled = !!value
     end
 
-    def self.load(input)
-      ::Psych.safe_load(input, permitted_classes: [::Symbol])
+    def self.aliases_enabled? # :nodoc:
+      @aliases_enabled
+    end
+
+    def self.safe_load(input)
+      if Gem.use_psych?
+        ::Psych.safe_load(input, permitted_classes: PERMITTED_CLASSES,
+                                 permitted_symbols: PERMITTED_SYMBOLS, aliases: @aliases_enabled)
+      else
+        Gem::YAMLSerializer.load(
+          input,
+          permitted_classes: PERMITTED_CLASSES,
+          permitted_symbols: PERMITTED_SYMBOLS,
+          aliases: aliases_enabled?
+        )
+      end
+    end
+
+    class << self
+      alias_method :load, :safe_load
     end
   end
 end

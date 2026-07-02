@@ -75,7 +75,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     @fetcher.data["http://gems.example.com/gems/a-10.a.gem"] = p1a_data
 
     dep = Gem::Dependency.new "a"
-    inst = Gem::DependencyInstaller.new :prerelease => true
+    inst = Gem::DependencyInstaller.new prerelease: true
     inst.install dep
 
     assert_equal %w[a-10.a], Gem::Specification.map(&:full_name)
@@ -97,7 +97,7 @@ class TestGemDependencyInstaller < Gem::TestCase
 
     dep = Gem::Dependency.new "a"
 
-    inst = Gem::DependencyInstaller.new :prerelease => true
+    inst = Gem::DependencyInstaller.new prerelease: true
     inst.install dep
 
     assert_equal %w[a-1.b b-1.b c-1.1.b], Gem::Specification.map(&:full_name)
@@ -132,7 +132,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     @fetcher.data["http://gems.example.com/gems/a-1.gem"] = p1a_data
 
     dep = Gem::Dependency.new "a"
-    inst = Gem::DependencyInstaller.new :prerelease => true
+    inst = Gem::DependencyInstaller.new prerelease: true
     inst.install dep
 
     assert_equal %w[a-1], Gem::Specification.map(&:full_name)
@@ -153,7 +153,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :ignore_dependencies => true
+      inst = Gem::DependencyInstaller.new ignore_dependencies: true
       inst.install "b"
     end
 
@@ -178,7 +178,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir dir do
-      inst = Gem::DependencyInstaller.new :cache_dir => @tempdir
+      inst = Gem::DependencyInstaller.new cache_dir: @tempdir
       inst.install "b"
     end
 
@@ -198,7 +198,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     Gem::Specification.reset
 
     FileUtils.mv @a1_gem, @tempdir
-    FileUtils.mv  a2_gem, @tempdir # not in index
+    FileUtils.mv a2_gem, @tempdir # not in index
     FileUtils.mv @b1_gem, @tempdir
     inst = nil
 
@@ -237,7 +237,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     Gem::Specification.reset
 
     FileUtils.mv @a1_gem, @tempdir
-    FileUtils.mv  a2_gem, @tempdir # not in index
+    FileUtils.mv a2_gem, @tempdir # not in index
     FileUtils.mv @b1_gem, @tempdir
     FileUtils.mv a3_gem, @tempdir
 
@@ -274,7 +274,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     FileUtils.mv @b1_gem, @tempdir
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new(:build_docs_in_background => false)
+      inst = Gem::DependencyInstaller.new(build_docs_in_background: false)
       inst.install "b"
     end
 
@@ -294,7 +294,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new(:development => true)
+      inst = Gem::DependencyInstaller.new(development: true)
       inst.install "b"
     end
 
@@ -314,7 +314,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new(:development => true)
+      inst = Gem::DependencyInstaller.new(development: true)
       inst.install "d"
     end
 
@@ -334,7 +334,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new(:development => true, :dev_shallow => true)
+      inst = Gem::DependencyInstaller.new(development: true, dev_shallow: true)
       inst.install "d"
     end
 
@@ -382,13 +382,9 @@ class TestGemDependencyInstaller < Gem::TestCase
     FileUtils.mv f1_gem, @tempdir
     inst = nil
 
-    pwd = Dir.getwd
-    Dir.chdir @tempdir
-    begin
+    Dir.chdir @tempdir do
       inst = Gem::DependencyInstaller.new
       inst.install "f"
-    ensure
-      Dir.chdir pwd
     end
 
     assert_equal %w[f-1], inst.installed_gems.map(&:full_name)
@@ -421,7 +417,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :domain => :local
+      inst = Gem::DependencyInstaller.new domain: :local
       inst.install "a-1.gem"
     end
 
@@ -435,7 +431,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :domain => :local
+      inst = Gem::DependencyInstaller.new domain: :local
       inst.install "a-1.a.gem"
     end
 
@@ -451,7 +447,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :domain => :local
+      inst = Gem::DependencyInstaller.new domain: :local
       inst.install "b-1.gem"
     end
 
@@ -469,11 +465,68 @@ class TestGemDependencyInstaller < Gem::TestCase
     Dir.chdir @tempdir do
       Gem::Installer.at("a-1.gem").install
 
-      inst = Gem::DependencyInstaller.new :domain => :local
+      inst = Gem::DependencyInstaller.new domain: :local
       inst.install "b-1.gem"
     end
 
     assert_equal %w[b-1], inst.installed_gems.map(&:full_name)
+  end
+
+  def test_install_local_dependency_no_network_for_target_gem
+    a1, a1_gem = util_gem "a", "1"
+    _, b1_gem = util_gem "b", "1" do |s|
+      s.add_dependency "a"
+    end
+
+    util_setup_spec_fetcher(a1)
+
+    a1_data = Gem.read_binary(a1_gem)
+    @fetcher.data["http://gems.example.com/gems/a-1.gem"] = a1_data
+
+    # compact index is available
+    compact_index_response = Gem::Net::HTTPResponse.new "1.1", 200, "OK"
+    compact_index_response.uri = Gem::URI("http://gems.example.com")
+    @fetcher.data["http://gems.example.com/"] = compact_index_response
+
+    # but private local gem not present there
+    @fetcher.data["http://gems.example.com/info/b"] =
+      proc do
+        raise "should not happen"
+      end
+
+    FileUtils.mv b1_gem, @tempdir
+
+    inst = nil
+
+    Dir.chdir @tempdir do
+      inst = Gem::DependencyInstaller.new
+      inst.install "b-1.gem"
+    end
+
+    assert_equal %w[a-1 b-1], inst.installed_gems.map(&:full_name)
+  end
+
+  def test_install_compact_index_api
+    a1, a1_gem = util_gem "a", 1, "b" => ">= 1"
+    b1, b1_gem = util_gem "b", 1
+
+    util_setup_compact_index a1, b1
+
+    add_to_fetcher a1, a1_gem
+    add_to_fetcher b1, b1_gem
+
+    # the compact index probe succeeds, so resolution goes through APISet
+    response = Gem::HTTPResponseFactory.create(body: "", code: 200, msg: "OK")
+    response.uri = Gem::URI("#{@gem_repo}versions")
+    @fetcher.data["#{@gem_repo}versions"] = response
+
+    inst = Gem::DependencyInstaller.new
+    inst.install "a"
+
+    assert_equal %w[a-1 b-1], inst.installed_gems.map(&:full_name)
+
+    quick_gemspec_fetches = @fetcher.paths.grep(/gemspec\.rz/)
+    assert_empty quick_gemspec_fetches
   end
 
   def test_install_local_subdir
@@ -482,11 +535,63 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :domain => :local
+      inst = Gem::DependencyInstaller.new domain: :local
       inst.install "gems/a-1.gem"
     end
 
     assert_equal %w[a-1], inst.installed_gems.map(&:full_name)
+  end
+
+  def test_install_local_with_extensions_already_installed
+    pend "needs investigation" if Gem.java_platform?
+    pend "ruby.h is not provided by ruby repo" if ruby_repo?
+
+    @spec = quick_gem "a" do |s|
+      s.extensions << "extconf.rb"
+      s.files += %w[extconf.rb a.c]
+    end
+
+    write_dummy_extconf "a"
+
+    c_source_path = File.join(@tempdir, "a.c")
+
+    write_file c_source_path do |io|
+      io.write <<-C
+        #include <ruby.h>
+        void Init_a() { }
+      C
+    end
+
+    package_path = Gem::Package.build @spec
+    installer = Gem::Installer.at(package_path)
+
+    # Make sure the gem is installed and backup the correct package
+
+    installer.install
+
+    package_bkp_path = "#{package_path}.bkp"
+    FileUtils.cp package_path, package_bkp_path
+
+    # Break the extension, rebuild it, and try to install it
+
+    write_file c_source_path do |io|
+      io.write "typo"
+    end
+
+    Gem::Package.build @spec
+
+    assert_raise Gem::Ext::BuildError do
+      installer.install
+    end
+
+    # Make sure installing the good package again still works
+
+    FileUtils.cp "#{package_path}.bkp", package_path
+
+    Dir.chdir @tempdir do
+      inst = Gem::DependencyInstaller.new domain: :local
+      inst.install package_path
+    end
   end
 
   def test_install_minimal_deps
@@ -508,7 +613,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :ignore_dependencies => true
+      inst = Gem::DependencyInstaller.new ignore_dependencies: true
       inst.install "b", req("= 1")
     end
 
@@ -516,7 +621,7 @@ class TestGemDependencyInstaller < Gem::TestCase
                  "sanity check"
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :minimal_deps => true
+      inst = Gem::DependencyInstaller.new minimal_deps: true
       inst.install "e"
     end
 
@@ -542,7 +647,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :ignore_dependencies => true
+      inst = Gem::DependencyInstaller.new ignore_dependencies: true
       inst.install "b", req("= 1")
     end
 
@@ -550,7 +655,7 @@ class TestGemDependencyInstaller < Gem::TestCase
                  "sanity check"
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :minimal_deps => false
+      inst = Gem::DependencyInstaller.new minimal_deps: false
       inst.install "e"
     end
 
@@ -567,7 +672,7 @@ class TestGemDependencyInstaller < Gem::TestCase
       assert_empty dep_installer.document
     end
 
-    inst = Gem::DependencyInstaller.new :domain => :local, :document => []
+    inst = Gem::DependencyInstaller.new domain: :local, document: []
 
     inst.install @a1_gem
 
@@ -581,13 +686,13 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :env_shebang => true, :wrappers => true, :format_executable => false
+      inst = Gem::DependencyInstaller.new env_shebang: true, wrappers: true, format_executable: false
       inst.install "a"
     end
 
     env = "/\\S+/env" unless Gem.win_platform?
 
-    assert_match(/\A#!#{env} #{RbConfig::CONFIG['ruby_install_name']}\n/,
+    assert_match(/\A#!#{env} #{RbConfig::CONFIG["ruby_install_name"]}\n/,
                  File.read(File.join(@gemhome, "bin", "a_bin")))
   end
 
@@ -595,16 +700,34 @@ class TestGemDependencyInstaller < Gem::TestCase
     util_setup_gems
 
     FileUtils.mv @b1_gem, @tempdir
-    si = util_setup_spec_fetcher @b1
-    @fetcher.data["http://gems.example.com/gems/yaml"] = si.to_yaml
+    util_setup_spec_fetcher @b1
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :force => true
+      inst = Gem::DependencyInstaller.new force: true
       inst.install "b"
     end
 
     assert_equal %w[b-1], inst.installed_gems.map(&:full_name)
+  end
+
+  def test_install_force_with_unsatisfiable_dep
+    # foo depends on bar >= 2.0, but only bar-1.0 exists.
+    # With --force, the unsatisfiable dep should be skipped.
+    _, foo_gem = util_gem "foo", "1" do |s|
+      s.add_dependency "bar", ">= 2.0"
+    end
+
+    util_setup_spec_fetcher(util_spec("bar", "1.0"))
+    FileUtils.mv foo_gem, @tempdir
+    inst = nil
+
+    Dir.chdir @tempdir do
+      inst = Gem::DependencyInstaller.new force: true
+      inst.install "foo"
+    end
+
+    assert_equal %w[foo-1], inst.installed_gems.map(&:full_name)
   end
 
   def test_install_build_args
@@ -615,7 +738,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     build_args = %w[--a --b="c"]
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new(:build_args => build_args)
+      inst = Gem::DependencyInstaller.new(build_args: build_args)
       inst.install "a"
     end
 
@@ -629,7 +752,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :ignore_dependencies => true
+      inst = Gem::DependencyInstaller.new ignore_dependencies: true
       inst.install "b"
     end
 
@@ -650,7 +773,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :install_dir => gemhome2
+      inst = Gem::DependencyInstaller.new install_dir: gemhome2
       inst.install "b"
     end
 
@@ -674,7 +797,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :domain => :both
+      inst = Gem::DependencyInstaller.new domain: :both
       inst.install "b"
     end
 
@@ -698,7 +821,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :domain => :both
+      inst = Gem::DependencyInstaller.new domain: :both
       inst.install "b"
     end
 
@@ -712,13 +835,12 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      e = assert_raise Gem::UnsatisfiableDependencyError do
-        inst = Gem::DependencyInstaller.new :domain => :local
+      e = assert_raise Gem::DependencyResolutionError do
+        inst = Gem::DependencyInstaller.new domain: :local
         inst.install "b"
       end
 
-      expected = "Unable to resolve dependency: 'b (>= 0)' requires 'a (>= 0)'"
-      assert_equal expected, e.message
+      assert_match(/depends on a >= 0 which could not be found in any repository/, e.message)
     end
 
     assert_equal [], inst.installed_gems.map(&:full_name)
@@ -734,7 +856,7 @@ class TestGemDependencyInstaller < Gem::TestCase
 
     @fetcher.data["http://gems.example.com/gems/a-1.gem"] = a1_data
 
-    inst = Gem::DependencyInstaller.new :domain => :remote
+    inst = Gem::DependencyInstaller.new domain: :remote
     inst.install "a"
 
     assert_equal %w[a-1], inst.installed_gems.map(&:full_name)
@@ -750,7 +872,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     gemhome2 = "#{@gemhome}2"
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :install_dir => gemhome2
+      inst = Gem::DependencyInstaller.new install_dir: gemhome2
       inst.install "a"
     end
 
@@ -777,12 +899,54 @@ class TestGemDependencyInstaller < Gem::TestCase
     inst = nil
 
     Dir.chdir @tempdir do
-      inst = Gem::DependencyInstaller.new :force => true
+      inst = Gem::DependencyInstaller.new force: true
       inst.install "a"
     end
 
     assert_equal %w[a-1], Gem::Specification.map(&:full_name)
     assert_equal %w[a-1], inst.installed_gems.map(&:full_name)
+  end
+
+  def test_install_dual_repository_and_done_installing_hooks
+    util_setup_gems
+
+    FileUtils.mv @a1_gem, @tempdir
+    FileUtils.mv @b1_gem, @tempdir
+    inst = nil
+
+    # Make sure gem is installed to standard GEM_HOME
+
+    Dir.chdir @tempdir do
+      inst = Gem::DependencyInstaller.new install_dir: @gemhome
+      inst.install "b"
+    end
+
+    # and also to an additional GEM_PATH
+
+    gemhome2 = "#{@gemhome}2"
+
+    Dir.chdir @tempdir do
+      inst = Gem::DependencyInstaller.new install_dir: gemhome2
+      inst.install "b"
+    end
+
+    # Now install the local gem with the additional GEM_PATH
+
+    ENV["GEM_HOME"] = @gemhome
+    ENV["GEM_PATH"] = [@gemhome, gemhome2].join File::PATH_SEPARATOR
+    Gem.clear_paths
+
+    Gem.done_installing do |installer, specs|
+      refute_nil installer
+      assert_equal [@b1], specs
+    end
+
+    Dir.chdir @tempdir do
+      inst = Gem::DependencyInstaller.new
+      inst.install "b-1.gem"
+    end
+
+    assert_equal %w[b-1], inst.installed_gems.map(&:full_name)
   end
 
   def test_install_remote
@@ -831,9 +995,7 @@ class TestGemDependencyInstaller < Gem::TestCase
       s.platform = Gem::Platform.new %w[cpu other_platform 1]
     end
 
-    si = util_setup_spec_fetcher @a1, a2_o
-
-    @fetcher.data["http://gems.example.com/gems/yaml"] = si.to_yaml
+    util_setup_spec_fetcher @a1, a2_o
 
     a1_data = nil
     a2_o_data = nil
@@ -851,7 +1013,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     @fetcher.data["http://gems.example.com/gems/#{a2_o.file_name}"] =
       a2_o_data
 
-    inst = Gem::DependencyInstaller.new :domain => :remote
+    inst = Gem::DependencyInstaller.new domain: :remote
     inst.install "a"
 
     assert_equal %w[a-1], inst.installed_gems.map(&:full_name)
@@ -862,7 +1024,7 @@ class TestGemDependencyInstaller < Gem::TestCase
       s.platform = Gem::Platform.new %w[cpu other_platform 1]
     end
 
-    inst = Gem::DependencyInstaller.new :domain => :local
+    inst = Gem::DependencyInstaller.new domain: :local
     inst.install a_gem
 
     assert_equal %w[a-1-cpu-other_platform-1], inst.installed_gems.map(&:full_name)
@@ -881,7 +1043,7 @@ class TestGemDependencyInstaller < Gem::TestCase
       @fetcher.data["http://gems.example.com/gems/b-1.gem"] = data
 
       policy = Gem::Security::HighSecurity
-      inst = Gem::DependencyInstaller.new :security_policy => policy
+      inst = Gem::DependencyInstaller.new security_policy: policy
 
       e = assert_raise Gem::Security::Exception do
         inst.install "b"
@@ -901,7 +1063,7 @@ class TestGemDependencyInstaller < Gem::TestCase
 
       @fetcher.data["http://gems.example.com/gems/a-1.gem"] = read_binary(@a1_gem)
 
-      inst = Gem::DependencyInstaller.new :wrappers => false, :format_executable => false
+      inst = Gem::DependencyInstaller.new wrappers: false, format_executable: false
       inst.install "a"
 
       refute_match(/This file was generated by RubyGems./,
@@ -990,117 +1152,6 @@ class TestGemDependencyInstaller < Gem::TestCase
     assert_equal %w[activesupport-1.0.0], Gem::Specification.map(&:full_name)
   end
 
-  def test_find_gems_gems_with_sources
-    util_setup_gems
-
-    inst = Gem::DependencyInstaller.new
-    dep = Gem::Dependency.new "b", ">= 0"
-
-    Gem::Specification.reset
-
-    set = Gem::Deprecate.skip_during do
-      inst.find_gems_with_sources(dep)
-    end
-
-    assert_kind_of Gem::AvailableSet, set
-
-    s = set.set.first
-
-    assert_equal @b1, s.spec
-    assert_equal Gem::Source.new(@gem_repo), s.source
-  end
-
-  def test_find_gems_with_sources_local
-    util_setup_gems
-
-    FileUtils.mv @a1_gem, @tempdir
-    inst = Gem::DependencyInstaller.new
-    dep = Gem::Dependency.new "a", ">= 0"
-    set = nil
-
-    Dir.chdir @tempdir do
-      set = Gem::Deprecate.skip_during do
-        inst.find_gems_with_sources dep
-      end
-    end
-
-    gems = set.sorted
-
-    assert_equal 2, gems.length
-
-    remote, local = gems
-
-    assert_equal "a-1", local.spec.full_name, "local spec"
-    assert_equal File.join(@tempdir, @a1.file_name),
-                 local.source.download(local.spec), "local path"
-
-    assert_equal "a-1", remote.spec.full_name, "remote spec"
-    assert_equal Gem::Source.new(@gem_repo), remote.source, "remote path"
-  end
-
-  def test_find_gems_with_sources_prerelease
-    util_setup_gems
-
-    installer = Gem::DependencyInstaller.new
-
-    dependency = Gem::Dependency.new("a", Gem::Requirement.default)
-
-    set = Gem::Deprecate.skip_during do
-      installer.find_gems_with_sources(dependency)
-    end
-
-    releases = set.all_specs
-
-    assert releases.any? {|s| s.name == "a" && s.version.to_s == "1" }
-    refute releases.any? {|s| s.name == "a" && s.version.to_s == "1.a" }
-
-    dependency.prerelease = true
-
-    set = Gem::Deprecate.skip_during do
-      installer.find_gems_with_sources(dependency)
-    end
-
-    prereleases = set.all_specs
-
-    assert_equal [@a1_pre, @a1], prereleases
-  end
-
-  def test_find_gems_with_sources_with_best_only_and_platform
-    util_setup_gems
-    a1_x86_mingw32, = util_gem "a", "1" do |s|
-      s.platform = "x86-mingw32"
-    end
-    util_setup_spec_fetcher @a1, a1_x86_mingw32
-    Gem.platforms << Gem::Platform.new("x86-mingw32")
-
-    installer = Gem::DependencyInstaller.new
-
-    dependency = Gem::Dependency.new("a", Gem::Requirement.default)
-
-    set = Gem::Deprecate.skip_during do
-      installer.find_gems_with_sources(dependency, true)
-    end
-
-    releases = set.all_specs
-
-    assert_equal [a1_x86_mingw32], releases
-  end
-
-  def test_find_gems_with_sources_with_bad_source
-    Gem.sources.replace ["http://not-there.nothing"]
-
-    installer = Gem::DependencyInstaller.new
-
-    dep = Gem::Dependency.new("a")
-
-    out = Gem::Deprecate.skip_during do
-      installer.find_gems_with_sources(dep)
-    end
-
-    assert out.empty?
-    assert_kind_of Gem::SourceFetchProblem, installer.errors.first
-  end
-
   def test_resolve_dependencies
     util_setup_gems
 
@@ -1121,7 +1172,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     FileUtils.mv @a1_gem, @tempdir
     FileUtils.mv @b1_gem, @tempdir
 
-    inst = Gem::DependencyInstaller.new :ignore_dependencies => true
+    inst = Gem::DependencyInstaller.new ignore_dependencies: true
     request_set = inst.resolve_dependencies "b", req(">= 0")
 
     requests = request_set.sorted_requests.map(&:full_name)

@@ -7,7 +7,7 @@
 
 # rubocop:enable Style/AsciiComments
 
-require_relative "../rubygems"
+require_relative "win_platform"
 require_relative "security"
 require_relative "user_interaction"
 
@@ -59,7 +59,7 @@ class Gem::Package
 
     def initialize(message, source = nil)
       if source
-        @path = source.path
+        @path = source.is_a?(String) ? source : source.path
 
         message += " in #{path}" if path
       end
@@ -161,7 +161,7 @@ class Gem::Package
     return super unless gem.start
     return super unless gem.start.include? "MD5SUM ="
 
-    Gem::Package::Old.new gem
+    Gem::Package::Old.new gem, security_policy
   end
 
   ##
@@ -232,7 +232,11 @@ class Gem::Package
 
     tar.add_file_signed "checksums.yaml.gz", 0o444, @signer do |io|
       gzip_to io do |gz_io|
-        Psych.dump checksums_by_algorithm, gz_io
+        if Gem.use_psych?
+          Psych.dump checksums_by_algorithm, gz_io
+        else
+          gz_io.write Gem::YAMLSerializer.dump(checksums_by_algorithm)
+        end
       end
     end
   end
@@ -268,7 +272,7 @@ class Gem::Package
 
       tar.add_file_simple file, stat.mode, stat.size do |dst_io|
         File.open file, "rb" do |src_io|
-          dst_io.write src_io.read 16_384 until src_io.eof?
+          copy_stream(src_io, dst_io, stat.size)
         end
       end
     end
@@ -295,7 +299,6 @@ class Gem::Package
 
     Gem.load_yaml
 
-    @spec.mark_version
     @spec.validate true, strict_validation unless skip_validation
 
     setup_signer(
@@ -347,6 +350,8 @@ EOM
         return @contents
       end
     end
+  rescue Zlib::GzipFile::Error, EOFError, Gem::Package::TarInvalidError => e
+    raise Gem::Package::FormatError.new e.message, @gem
   end
 
   ##
@@ -355,18 +360,21 @@ EOM
 
   def digest(entry) # :nodoc:
     algorithms = if @checksums
-      @checksums.keys
-    else
-      [Gem::Security::DIGEST_NAME].compact
+      @checksums.to_h {|algorithm, _| [algorithm, Gem::Security.create_digest(algorithm)] }
+    elsif Gem::Security::DIGEST_NAME
+      { Gem::Security::DIGEST_NAME => Gem::Security.create_digest(Gem::Security::DIGEST_NAME) }
     end
 
-    algorithms.each do |algorithm|
-      digester = Gem::Security.create_digest(algorithm)
+    return @digests if algorithms.nil? || algorithms.empty?
 
-      digester << entry.read(16_384) until entry.eof?
+    buf = String.new(capacity: 16_384, encoding: Encoding::BINARY)
+    until entry.eof?
+      entry.readpartial(16_384, buf)
+      algorithms.each_value {|digester| digester << buf }
+    end
+    entry.rewind
 
-      entry.rewind
-
+    algorithms.each do |algorithm, digester|
       @digests[algorithm][entry.full_name] = digester
     end
 
@@ -382,7 +390,7 @@ EOM
   def extract_files(destination_dir, pattern = "*")
     verify unless @spec
 
-    FileUtils.mkdir_p destination_dir, :mode => dir_mode && 0o755
+    FileUtils.mkdir_p destination_dir, mode: dir_mode && 0o755
 
     @gem.with_read_io do |io|
       reader = Gem::Package::TarReader.new io
@@ -395,6 +403,8 @@ EOM
         break # ignore further entries
       end
     end
+  rescue Zlib::GzipFile::Error, EOFError, Gem::Package::TarInvalidError => e
+    raise Gem::Package::FormatError.new e.message, @gem
   end
 
   ##
@@ -409,6 +419,8 @@ EOM
   # extracted.
 
   def extract_tar_gz(io, destination_dir, pattern = "*") # :nodoc:
+    destination_dir = File.realpath(destination_dir)
+
     directories = []
     symlinks = []
 
@@ -429,10 +441,6 @@ EOM
           symlinks << [full_name, link_target, destination, real_destination]
         end
 
-        FileUtils.rm_rf destination
-
-        mkdir_options = {}
-        mkdir_options[:mode] = dir_mode ? 0o755 : (entry.header.mode if entry.directory?)
         mkdir =
           if entry.directory?
             destination
@@ -441,13 +449,24 @@ EOM
           end
 
         unless directories.include?(mkdir)
-          FileUtils.mkdir_p mkdir, **mkdir_options
+          FileUtils.mkdir_p mkdir, mode: dir_mode ? 0o755 : (entry.header.mode if entry.directory?)
           directories << mkdir
         end
 
+        real_mkdir = File.realpath(mkdir)
+        unless real_mkdir == destination_dir || normalize_path(real_mkdir).start_with?(normalize_path(destination_dir + "/"))
+          raise Gem::Package::PathError.new(real_mkdir, destination_dir)
+        end
+
         if entry.file?
-          File.open(destination, "wb") {|out| out.write entry.read }
-          FileUtils.chmod file_mode(entry.header.mode), destination
+          File.open(destination, "wb") do |out|
+            copy_stream(tar.io, out, entry.size)
+            # Flush needs to happen before chmod because there could be data
+            # in the IO buffer that needs to be written, and that could be
+            # written after the chmod (on close) which would mess up the perms
+            out.flush
+            out.chmod file_mode(entry.header.mode) & ~File.umask
+          end
         end
 
         verbose destination
@@ -456,7 +475,7 @@ EOM
 
     symlinks.each do |name, target, destination, real_destination|
       if File.exist?(real_destination)
-        File.symlink(target, destination)
+        create_symlink(target, destination)
       else
         alert_warning "#{@spec.full_name} ships with a dangling symlink named #{name} pointing to missing #{target} file. Ignoring"
       end
@@ -491,29 +510,12 @@ EOM
     gz_io.close
   end
 
-  ##
-  # Returns the full path for installing +filename+.
-  #
-  # If +filename+ is not inside +destination_dir+ an exception is raised.
-
-  def install_location(filename, destination_dir) # :nodoc:
-    raise Gem::Package::PathError.new(filename, destination_dir) if
-      filename.start_with? "/"
-
-    destination_dir = File.realpath(destination_dir)
-    destination = File.expand_path(filename, destination_dir)
-
-    raise Gem::Package::PathError.new(destination, destination_dir) unless
-      normalize_path(destination).start_with? normalize_path(destination_dir + "/")
-
-    destination.tap(&Gem::UNTAINT)
-    destination
-  end
-
-  def normalize_path(pathname)
-    if Gem.win_platform?
+  if Gem.win_platform?
+    def normalize_path(pathname) # :nodoc:
       pathname.downcase
-    else
+    end
+  else
+    def normalize_path(pathname) # :nodoc:
       pathname
     end
   end
@@ -521,13 +523,14 @@ EOM
   ##
   # Loads a Gem::Specification from the TarEntry +entry+
 
-  def load_spec(entry) # :nodoc:
+  def load_spec_from_metadata(entry) # :nodoc:
+    limit = 10 * 1024 * 1024
     case entry.full_name
     when "metadata" then
-      @spec = Gem::Specification.from_yaml entry.read
+      @spec = Gem::Specification.from_yaml limit_read(entry, "metadata", limit)
     when "metadata.gz" then
       Zlib::GzipReader.wrap(entry, external_encoding: Encoding::UTF_8) do |gzio|
-        @spec = Gem::Specification.from_yaml gzio.read
+        @spec = Gem::Specification.from_yaml limit_read(gzio, "metadata.gz", limit)
       end
     end
   end
@@ -540,6 +543,15 @@ EOM
       tar = Gem::Package::TarReader.new gzio
 
       yield tar
+    ensure
+      # Consume remaining gzip data to prevent the
+      # "attempt to close unfinished zstream; reset forced" warning
+      # when the GzipReader is closed with unconsumed compressed data.
+      begin
+        IO.copy_stream(gzio, IO::NULL)
+      rescue Zlib::GzipFile::Error, IOError
+        nil
+      end
     end
   end
 
@@ -551,7 +563,7 @@ EOM
 
     @checksums = gem.seek "checksums.yaml.gz" do |entry|
       Zlib::GzipReader.wrap entry do |gz_io|
-        Gem::SafeYAML.safe_load gz_io.read
+        Gem::SafeYAML.safe_load limit_read(gz_io, "checksums.yaml.gz", 10 * 1024 * 1024)
       end
     end
   end
@@ -626,8 +638,28 @@ EOM
     raise
   rescue Errno::ENOENT => e
     raise Gem::Package::FormatError.new e.message
-  rescue Gem::Package::TarInvalidError => e
+  rescue Zlib::GzipFile::Error, EOFError, Gem::Package::TarInvalidError => e
     raise Gem::Package::FormatError.new e.message, @gem
+  end
+
+  private
+
+  ##
+  # Returns the full path for installing +filename+ into +destination_dir+,
+  # which must already be resolved with File.realpath by the caller.
+  #
+  # If +filename+ is not inside +destination_dir+ an exception is raised.
+
+  def install_location(filename, destination_dir) # :nodoc:
+    raise Gem::Package::PathError.new(filename, destination_dir) if
+      filename.start_with? "/"
+
+    destination = File.expand_path(filename, destination_dir)
+
+    raise Gem::Package::PathError.new(destination, destination_dir) unless
+      normalize_path(destination).start_with? normalize_path(destination_dir + "/")
+
+    destination
   end
 
   ##
@@ -658,18 +690,13 @@ EOM
 
     case file_name
     when /\.sig$/ then
-      @signatures[$`] = entry.read if @security_policy
+      @signatures[$`] = limit_read(entry, file_name, 1024 * 1024) if @security_policy
       return
     else
       digest entry
     end
 
-    case file_name
-    when "metadata", "metadata.gz" then
-      load_spec entry
-    when "data.tar.gz" then
-      verify_gz entry
-    end
+    load_spec_from_metadata entry
   rescue StandardError
     warn "Exception while verifying #{@gem.path}"
     raise
@@ -697,15 +724,37 @@ EOM
     end
   end
 
-  ##
-  # Verifies that +entry+ is a valid gzipped file.
-
-  def verify_gz(entry) # :nodoc:
-    Zlib::GzipReader.wrap entry do |gzio|
-      gzio.read 16_384 until gzio.eof? # gzip checksum verification
+  #if RUBY_ENGINE == "truffleruby"
+    #def copy_stream(src, dst, size) # :nodoc:
+      #dst.write src.read(size)
+    #end
+  #else
+    def copy_stream(src, dst, size) # :nodoc:
+      IO.copy_stream(src, dst, size)
     end
-  rescue Zlib::GzipFile::Error => e
-    raise Gem::Package::FormatError.new(e.message, entry.full_name)
+  #end
+
+  def limit_read(io, name, limit)
+    bytes = io.read(limit + 1)
+    raise Gem::Package::FormatError, "#{name} is too big (over #{limit} bytes)" if bytes.size > limit
+    bytes
+  end
+
+  if Gem.win_platform?
+    # Create a symlink and fallback to copy the file or directory on Windows,
+    # where symlink creation needs special privileges in form of the Developer Mode.
+    # JRuby on Windows raises TypeError from the wincode path-conversion helper
+    # when it cannot create the symlink, so fall back to copy in that case too.
+    def create_symlink(old_name, new_name)
+      File.symlink(old_name, new_name)
+    rescue Errno::EACCES, TypeError
+      from = File.expand_path(old_name, File.dirname(new_name))
+      FileUtils.cp_r(from, new_name)
+    end
+  else
+    def create_symlink(old_name, new_name)
+      File.symlink(old_name, new_name)
+    end
   end
 end
 

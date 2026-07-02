@@ -4,13 +4,6 @@ require_relative "helper"
 require "rubygems/commands/setup_command"
 
 class TestGemCommandsSetupCommand < Gem::TestCase
-  bundler_gemspec = File.expand_path("../../bundler/lib/bundler/version.rb", __dir__)
-  if File.exist?(bundler_gemspec)
-    BUNDLER_VERS = File.read(bundler_gemspec).match(/VERSION = "(#{Gem::Version::VERSION_PATTERN})"/)[1]
-  else
-    BUNDLER_VERS = "2.0.1"
-  end
-
   def setup
     super
 
@@ -22,26 +15,26 @@ class TestGemCommandsSetupCommand < Gem::TestCase
       lib/rubygems.rb
       lib/rubygems/requirement.rb
       lib/rubygems/ssl_certs/rubygems.org/foo.pem
-      bundler/exe/bundle
-      bundler/exe/bundler
-      bundler/lib/bundler.rb
-      bundler/lib/bundler/b.rb
-      bundler/bin/bundler/man/bundle-b.1
-      bundler/lib/bundler/man/bundle-b.1.ronn
-      bundler/lib/bundler/man/gemfile.5
-      bundler/lib/bundler/man/gemfile.5.ronn
-      bundler/lib/bundler/templates/.circleci/config.yml
-      bundler/lib/bundler/templates/.travis.yml
+      exe/bundle
+      exe/bundler
+      lib/bundler.rb
+      lib/bundler/b.rb
+      lib/bundler/man/bundle-b.1
+      lib/bundler/man/bundle-b.1.ronn
+      lib/bundler/man/gemfile.5
+      lib/bundler/man/gemfile.5.ronn
+      lib/bundler/templates/.circleci/config.yml
     ]
 
     create_dummy_files(filelist)
 
-    gemspec = util_spec "bundler", BUNDLER_VERS do |s|
+    gemspec = util_spec "bundler", "9.9.9" do |s|
       s.bindir = "exe"
       s.executables = ["bundle", "bundler"]
+      s.files = ["lib/bundler.rb"]
     end
 
-    File.open "bundler/bundler.gemspec", "w" do |io|
+    File.open "bundler.gemspec", "w" do |io|
       io.puts gemspec.to_ruby
     end
 
@@ -160,9 +153,36 @@ class TestGemCommandsSetupCommand < Gem::TestCase
     end
   end
 
+  def test_destdir_flag_regenerates_binstubs
+    # install to destdir
+    destdir = File.join(@tempdir, "foo")
+    gem_bin_path = gem_install "destdir-only-gem", install_dir: destdir
+
+    # change binstub manually
+    write_file gem_bin_path do |io|
+      io.puts "I changed it!"
+    end
+
+    @cmd.options[:destdir] = destdir
+    @cmd.options[:prefix] = "/"
+    @cmd.execute
+
+    assert_match(/\A#!/, File.read(gem_bin_path))
+  end
+
   def test_files_in
-    assert_equal %w[rubygems.rb rubygems/requirement.rb rubygems/ssl_certs/rubygems.org/foo.pem],
-                 @cmd.files_in("lib").sort
+    assert_equal %w[
+      bundler.rb
+      bundler/b.rb
+      bundler/man/bundle-b.1
+      bundler/man/bundle-b.1.ronn
+      bundler/man/gemfile.5
+      bundler/man/gemfile.5.ronn
+      bundler/templates/.circleci/config.yml
+      rubygems.rb
+      rubygems/requirement.rb
+      rubygems/ssl_certs/rubygems.org/foo.pem
+    ], @cmd.files_in("lib").sort
   end
 
   def test_install_lib
@@ -178,7 +198,6 @@ class TestGemCommandsSetupCommand < Gem::TestCase
       assert_path_exist File.join(dir, "bundler/b.rb")
 
       assert_path_exist File.join(dir, "bundler/templates/.circleci/config.yml")
-      assert_path_exist File.join(dir, "bundler/templates/.travis.yml")
     end
   end
 
@@ -209,9 +228,14 @@ class TestGemCommandsSetupCommand < Gem::TestCase
     # expect to remove normal gem that was same version. because it's promoted default gems.
     assert_path_not_exist File.join(Gem.dir, "specifications", "bundler-#{bundler_version}.gemspec")
 
+    # expect to remove the previous default version
+    assert_path_not_exist "#{Gem.dir}/gems/bundler-1.15.4"
+
     assert_path_exist "#{Gem.dir}/gems/bundler-#{bundler_version}"
-    assert_path_exist "#{Gem.dir}/gems/bundler-1.15.4"
     assert_path_exist "#{Gem.dir}/gems/bundler-audit-1.0.0"
+
+    assert_path_exist "#{Gem.dir}/gems/bundler-#{bundler_version}/exe/bundle"
+    assert_path_not_exist "#{Gem.dir}/gems/bundler-#{bundler_version}/lib/bundler.rb"
   end
 
   def test_install_default_bundler_gem_with_default_gems_not_installed_at_default_dir
@@ -363,20 +387,22 @@ class TestGemCommandsSetupCommand < Gem::TestCase
 
     File.open "CHANGELOG.md", "w" do |io|
       io.puts <<-HISTORY_TXT
-# #{Gem::VERSION} / 2013-03-26
+# Changelog
 
-## Bug fixes:
+## #{Gem::VERSION} / 2013-03-26
+
+### Bug fixes:
   * Fixed release note display for LANG=C when installing rubygems
   * π is tasty
 
-# 2.0.2 / 2013-03-06
+## 2.0.2 / 2013-03-06
 
-## Bug fixes:
+### Bug fixes:
   * Other bugs fixed
 
-# 2.0.1 / 2013-03-05
+## 2.0.1 / 2013-03-05
 
-## Bug fixes:
+### Bug fixes:
   * Yet more bugs fixed
       HISTORY_TXT
     end
@@ -386,9 +412,9 @@ class TestGemCommandsSetupCommand < Gem::TestCase
     end
 
     expected = <<-EXPECTED
-# #{Gem::VERSION} / 2013-03-26
+## #{Gem::VERSION} / 2013-03-26
 
-## Bug fixes:
+### Bug fixes:
   * Fixed release note display for LANG=C when installing rubygems
   * π is tasty
 
@@ -414,7 +440,7 @@ class TestGemCommandsSetupCommand < Gem::TestCase
     end
   end
 
-  def gem_install(name)
+  def gem_install(name, **options)
     gem = util_spec name do |s|
       s.executables = [name]
       s.files = %W[bin/#{name}]
@@ -422,8 +448,8 @@ class TestGemCommandsSetupCommand < Gem::TestCase
     write_file File.join @tempdir, "bin", name do |f|
       f.puts "#!/usr/bin/ruby"
     end
-    install_gem gem
-    File.join @gemhome, "bin", name
+    install_gem gem, **options
+    File.join options[:install_dir] || @gemhome, "bin", name
   end
 
   def gem_install_with_plugin(name)
@@ -459,7 +485,7 @@ class TestGemCommandsSetupCommand < Gem::TestCase
   end
 
   def bundler_spec
-    Gem::Specification.load("bundler/bundler.gemspec")
+    Gem::Specification.load("bundler.gemspec")
   end
 
   def bundler_version

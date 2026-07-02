@@ -30,7 +30,7 @@ The push command will use ~/.gem/credentials to authenticate to a server, but yo
   end
 
   def initialize
-    super "push", "Push a gem up to the gem server", :host => host
+    super "push", "Push a gem up to the gem server", host: host, attestations: []
 
     @user_defined_host = false
 
@@ -43,6 +43,11 @@ The push command will use ~/.gem/credentials to authenticate to a server, but yo
                "  (e.g. https://rubygems.org)") do |value, options|
       options[:host] = value
       @user_defined_host = true
+    end
+
+    add_option("--attestation FILE",
+                "Push with sigstore attestations") do |value, options|
+      options[:attestations] << value
     end
 
     @host = nil
@@ -87,12 +92,77 @@ The push command will use ~/.gem/credentials to authenticate to a server, but yo
   private
 
   def send_push_request(name, args)
-    rubygems_api_request(*args, scope: get_push_scope) do |request|
-      request.body = Gem.read_binary name
-      request.add_field "Content-Length", request.body.size
-      request.add_field "Content-Type",   "application/octet-stream"
-      request.add_field "Authorization",  api_key
+    # Always honor explicit --attestation option
+    # Auto-attestation is only supported on rubygems.org with GitHub Actions (not JRuby)
+    if options[:attestations].any? || (RUBY_ENGINE != "jruby" && attestation_supported_host? && ENV["GITHUB_ACTIONS"])
+      send_push_request_with_attestation(name, args)
+    else
+      send_push_request_without_attestation(name, args)
     end
+  end
+
+  def send_push_request_without_attestation(name, args)
+    scope = get_push_scope
+    rubygems_api_request(*args, scope: scope) do |request|
+      body = Gem.read_binary name
+      request.body = body
+      request.add_field "Content-Type",   "application/octet-stream"
+      request.add_field "Content-Length", request.body.size
+      request.add_field "Authorization", api_key
+    end
+  end
+
+  def send_push_request_with_attestation(name, args)
+    attestations = if options[:attestations].any?
+      options[:attestations].map do |attestation|
+        Gem.read_binary(attestation)
+      end
+    else
+      bundle_path = attest!(name)
+      begin
+        [Gem.read_binary(bundle_path)]
+      ensure
+        File.unlink(bundle_path) if bundle_path && File.exist?(bundle_path)
+      end
+    end
+    bundles = "[" + attestations.join(",") + "]"
+
+    rubygems_api_request(*args, scope: get_push_scope) do |request|
+      request.set_form([
+        ["gem", Gem.read_binary(name), { filename: name, content_type: "application/octet-stream" }],
+        ["attestations", bundles, { content_type: "application/json" }],
+      ], "multipart/form-data")
+      request.add_field "Authorization", api_key
+    end
+  rescue StandardError => e
+    message = "Failed to push with attestation, retrying without attestation.\n"
+    message += if Gem.configuration.really_verbose
+      e.full_message
+    else
+      e.message
+    end
+    alert_warning message
+    send_push_request_without_attestation(name, args)
+  end
+
+  def attest!(name)
+    require "open3"
+    require "tempfile"
+
+    tempfile = Tempfile.new([File.basename(name, ".*"), ".sigstore.json"])
+    bundle = tempfile.path
+    tempfile.close(false)
+
+    env = defined?(Bundler.unbundled_env) ? Bundler.unbundled_env : ENV.to_h
+    out, st = Open3.capture2e(
+      env,
+      Gem.ruby, "-S", "gem", "exec", "--conservative",
+      "sigstore-cli", "sign", name, "--bundle", bundle,
+      unsetenv_others: true
+    )
+    raise Gem::Exception, "Failed to sign gem:\n\n#{out}" unless st.success?
+
+    bundle
   end
 
   def get_hosts_for(name)
@@ -106,5 +176,10 @@ The push command will use ~/.gem/credentials to authenticate to a server, but yo
 
   def get_push_scope
     :push_rubygem
+  end
+
+  def attestation_supported_host?
+    host = (@host || Gem.host).to_s.chomp("/")
+    host == Gem::DEFAULT_HOST
   end
 end

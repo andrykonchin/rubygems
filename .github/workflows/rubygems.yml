@@ -2,7 +2,10 @@ name: rubygems
 
 on:
   pull_request:
-  merge_group:
+
+  push:
+    branches:
+      - master
 
 concurrency:
   group: ci-${{ github.ref }}-${{ github.workflow }}
@@ -10,6 +13,10 @@ concurrency:
 
 permissions:  # added using https://github.com/step-security/secure-workflows
   contents: read
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   rubygems:
@@ -19,64 +26,89 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - { name: Ubuntu, value: ubuntu-22.04 }
-          - { name: macOS, value: macos-12 }
-          - { name: Windows, value: windows-2022 }
+          - { name: Ubuntu, value: ubuntu-24.04 }
+          - { name: macOS, value: macos-26 }
+          - { name: Windows, value: windows-2025 }
 
         ruby:
-          - { name: "2.6", value: 2.6.10 }
-          - { name: "2.7", value: 2.7.7 }
-          - { name: "3.0", value: 3.0.5 }
-          - { name: "3.1", value: 3.1.3 }
-          - { name: "3.2", value: 3.2.1 }
+          - { name: "3.2", value: 3.2.11 }
+          - { name: "3.3", value: 3.3.11 }
+          - { name: "3.4", value: 3.4.9 }
+          - { name: "4.0", value: 4.0.5 }
 
         include:
-          - ruby: { name: "3.2", value: 3.2.1 }
-            os: { name: macOS, value: macos-12 }
+          # Regression coverage for the Intel architecture with the latest Ruby only
+          - ruby: { name: "4.0", value: 4.0.5 }
+            os: { name: macOS-intel, value: macos-15-intel }
 
-          - ruby: { name: jruby-9.4, value: jruby-9.4.2.0 }
-            os: { name: Ubuntu, value: ubuntu-22.04 }
+          - ruby: { name: jruby, value: jruby-10.1.0.0 }
+            os: { name: Ubuntu, value: ubuntu-24.04 }
 
-          - ruby: { name: truffleruby-22, value: truffleruby-22.3.0 }
-            os: { name: Ubuntu, value: ubuntu-22.04 }
+          - ruby: { name: jruby, value: jruby-10.1.0.0 }
+            os: { name: macOS, value: macos-26 }
 
-          - os: { name: Windows, value: windows-2022 }
-            ruby: { name: mswin, value: mswin }
+          - ruby: { name: jruby, value: jruby-10.1.0.0 }
+            os: { name: Windows, value: windows-2025 }
+
+          - ruby: { name: truffleruby, value: truffleruby-34.0.1 }
+            os: { name: Ubuntu, value: ubuntu-24.04 }
+
+          - ruby: { name: 4.0 (psych), value: 4.0.5 }
+            os: { name: Ubuntu, value: ubuntu-24.04 }
+            use_psych: true
+
+          - ruby: { name: no symlinks, value: 4.0.5 }
+            os: { name: Windows, value: windows-2025 }
+            symlink: off
+    env:
+      RUBYGEMS_USE_PSYCH: ${{ matrix.use_psych || 'false' }}
 
     steps:
-      - uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
-      - name: Setup ruby (Ubuntu/macOS)
-        uses: ruby/setup-ruby@250fcd6a742febb1123a77a841497ccaa8b9e939 # v1.152.0
+      - name: disable development mode on Windows
+        run: powershell -c "Set-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock -Name AllowDevelopmentWithoutDevLicense -Value 0"
+        if: matrix.symlink == 'off'
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Setup ruby
+        uses: ruby/setup-ruby@0dafeac902942906541bc140009cdbf32665b601 # v1.315.0
         with:
           ruby-version: ${{ matrix.ruby.value }}
           bundler: none
-        if: matrix.os.name != 'Windows'
-      - name: Setup ruby (Windows)
-        uses: ruby/setup-ruby-pkgs@af45875e8df3485265907b05fe263a4a1a07eeb2 # v1.32.4
-        with:
-          ruby-version: ${{ matrix.ruby.value }}
-          bundler: none
-          mingw: clang
-        if: matrix.os.name == 'Windows'
-      - name: Configure bindgen
-        shell: pwsh
-        run: |
-          echo "LIBCLANG_PATH=$((gcm clang).source -replace "clang.exe")" >> $env:GITHUB_ENV
-          echo "BINDGEN_EXTRA_CLANG_ARGS=$((gcm clang).source -replace "bin\clang.exe","include")" >> $env:GITHUB_ENV
-        if: matrix.ruby.name == 'mswin'
       - name: Install Dependencies
-        run: rake setup
+        run: bin/rake setup
       - name: Run Test
-        run: rake test
-        if: "!startsWith(matrix.ruby.name, 'truffleruby') && !startsWith(matrix.ruby.name, 'jruby')"
+        run: bin/rake test
+        if: matrix.ruby.name != 'truffleruby' && matrix.ruby.name != 'jruby' && matrix.symlink != 'off'
       - name: Run Test isolatedly
-        run: rake test:isolated
-        if: matrix.ruby.name == '3.2' && matrix.os.name != 'Windows'
+        run: bin/rake test:isolated
+        if: matrix.ruby.name == '3.4' && matrix.os.name != 'Windows'
       - name: Run Test (JRuby)
-        run: JRUBY_OPTS=--debug rake test
+        run: JRUBY_OPTS=--debug bin/rake test
         if: startsWith(matrix.ruby.name, 'jruby')
       - name: Run Test (Truffleruby)
-        run: TRUFFLERUBYOPT="--experimental-options --testing-rubygems" rake test
-        if: startsWith(matrix.ruby.name, 'truffleruby')
+        run: TRUFFLERUBYOPT="--experimental-options --testing-rubygems" bin/rake test
+        if: matrix.ruby.name == 'truffleruby'
+      - name: Run Test with non-Admin user
+        run: |
+          gem inst win32-process --no-doc --conservative
+          ruby bin/windows_run_as_user ruby -S rake test
+        if: matrix.symlink == 'off'
 
     timeout-minutes: 60
+
+  all-pass:
+    name: All rubygems jobs pass
+
+    if: always()
+
+    needs:
+      - rubygems
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: check dependent jobs
+        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
+        with:
+          jobs: ${{ toJSON(needs) }}

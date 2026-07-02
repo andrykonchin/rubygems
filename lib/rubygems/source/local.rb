@@ -40,10 +40,11 @@ class Gem::Source::Local < Gem::Source
 
       Dir["*.gem"].each do |file|
         pkg = Gem::Package.new(file)
+        spec = pkg.spec
       rescue SystemCallError, Gem::Package::FormatError
         # ignore
       else
-        tup = pkg.spec.name_tuple
+        tup = spec.name_tuple
         @specs[tup] = [File.expand_path(file), pkg]
 
         case type
@@ -75,6 +76,10 @@ class Gem::Source::Local < Gem::Source
   end
 
   def find_gem(gem_name, version = Gem::Requirement.default, prerelease = false) # :nodoc:
+    find_all_gems(gem_name, version, prerelease).max_by(&:version)
+  end
+
+  def find_all_gems(gem_name, version = Gem::Requirement.default, prerelease = false) # :nodoc:
     load_specs :complete
 
     found = []
@@ -92,7 +97,7 @@ class Gem::Source::Local < Gem::Source
       end
     end
 
-    found.max_by(&:version)
+    found
   end
 
   def fetch_spec(name) # :nodoc:
@@ -116,10 +121,14 @@ class Gem::Source::Local < Gem::Source
   end
 
   def pretty_print(q) # :nodoc:
-    q.group 2, "[Local gems:", "]" do
-      q.breakable
-      q.seplist @specs.keys do |v|
-        q.text v.full_name
+    q.object_group(self) do
+      q.group 2, "[Local gems:", "]" do
+        q.breakable
+        if @specs
+          q.seplist @specs.keys do |v|
+            q.text v.full_name
+          end
+        end
       end
     end
   end
