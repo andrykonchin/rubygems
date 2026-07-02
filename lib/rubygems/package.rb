@@ -724,15 +724,15 @@ EOM
     end
   end
 
-  if RUBY_ENGINE == "truffleruby"
-    def copy_stream(src, dst, size) # :nodoc:
-      dst.write src.read(size)
-    end
-  else
+  #if RUBY_ENGINE == "truffleruby"
+    #def copy_stream(src, dst, size) # :nodoc:
+      #dst.write src.read(size)
+    #end
+  #else
     def copy_stream(src, dst, size) # :nodoc:
       IO.copy_stream(src, dst, size)
     end
-  end
+  #end
 
   def limit_read(io, name, limit)
     bytes = io.read(limit + 1)
